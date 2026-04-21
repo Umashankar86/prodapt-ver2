@@ -9,7 +9,7 @@ QUERY_STOPWORDS = {
     "provide", "provided", "for", "from", "with", "that", "this", "its", "their", "there", "about", "into",
     "the", "a", "an", "in", "on", "of", "to", "and", "or", "by",
 }
-
+ 
 
 def summarize_tool_result(action: str, results: object) -> str:
     serialized = json.dumps(results, ensure_ascii=True)

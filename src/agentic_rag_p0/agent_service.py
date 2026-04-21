@@ -1,4 +1,5 @@
 import json
+import re
 from .agent_state import AgentState
 from .agent_support import confidence_from_score, extract_table_references_from_sql, has_usable_web_evidence, is_simple_structured_question, local_docs_cover_question, needs_commentary, normalize_claim, state_snapshot, summarize_tool_result
 from .config import Settings
@@ -81,7 +82,85 @@ class AgentService:
             return answer
         suffix = "\n\n".join(tables)
         return f"{answer}\n\n{suffix}" if answer.strip() else suffix
-    def build_tool_input(self, s: AgentState, a: str) -> object:
+    def _document_filters_for_text(self, text: str, document_catalog: list[dict]) -> list[str]:
+        if not text or not document_catalog:
+            return []
+        lowered = text.lower()
+        matches: list[str] = []
+        for document in document_catalog:
+            if not isinstance(document, dict):
+                continue
+            filename = str(document.get("filename", "")).strip()
+            aliases = self._document_aliases(document)
+            if any(alias in lowered for alias in aliases):
+                matches.append(filename)
+        return matches
+    def _search_doc_attempt_counts(self, s: AgentState) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for evidence in s.evidence:
+            if evidence.source_tool != "search_docs":
+                continue
+            try:
+                payload = json.loads(evidence.tool_input)
+            except json.JSONDecodeError:
+                continue
+            filters = payload.get("document_filters", [])
+            if not isinstance(filters, list):
+                continue
+            for filename in filters:
+                key = str(filename).strip().lower()
+                if key:
+                    counts[key] = counts.get(key, 0) + 1
+        return counts
+    def _document_filter_for_active_subgoal(self, s: AgentState, document_catalog: list[dict], routing_text: str = "") -> tuple[list[str], str]:
+        routing_matches = self._document_filters_for_text(routing_text, document_catalog)
+        if len(routing_matches) == 1:
+            return routing_matches, routing_text
+        candidates: list[tuple[str, str]] = []
+        for subgoal in s.subgoals:
+            if subgoal.status == "done":
+                continue
+            matches = self._document_filters_for_text(subgoal.description, document_catalog)
+            if len(matches) == 1:
+                candidates.append((matches[0], subgoal.description))
+        if not candidates:
+            label_matches = self._document_filters_for_text(self._label(s), document_catalog)
+            return (label_matches, self._label(s)) if len(label_matches) == 1 else ([], "")
+        attempt_counts = self._search_doc_attempt_counts(s)
+        filename, target_text = min(candidates, key=lambda item: attempt_counts.get(item[0].lower(), 0))
+        return [filename], target_text
+    def _document_aliases(self, document: dict) -> set[str]:
+        filename = str(document.get("filename", "")).strip()
+        subject_hint = str(document.get("subject_hint", "")).strip().lower()
+        stem_tokens = {
+            token
+            for token in re.split(r"[^a-z0-9]+", filename.lower())
+            if len(token) > 1 and token not in {"pdf", "txt", "md", "ar", "annual", "report"}
+        }
+        return {subject_hint, *stem_tokens} - {""}
+    def _targeted_search_query(self, raw_query: str, s: AgentState, filters: list[str], document_catalog: list[dict], routing_text: str = "") -> str:
+        label = (routing_text or self._label(s)).strip()
+        if not filters or not label:
+            return raw_query
+        selected_filename = filters[0].lower()
+        selected_aliases: set[str] = set()
+        other_aliases: set[str] = set()
+        for document in document_catalog:
+            if not isinstance(document, dict):
+                continue
+            aliases = self._document_aliases(document)
+            if str(document.get("filename", "")).strip().lower() == selected_filename:
+                selected_aliases.update(aliases)
+            else:
+                other_aliases.update(aliases)
+        lowered_query = raw_query.lower()
+        if other_aliases.intersection(set(re.findall(r"[a-z0-9]+", lowered_query))):
+            return label
+        subject = sorted(selected_aliases, key=len, reverse=True)[0] if selected_aliases else ""
+        if subject and subject not in lowered_query:
+            return f"{subject} {raw_query}".strip()
+        return raw_query
+    def build_tool_input(self, s: AgentState, a: str, action_rationale: str = "") -> object:
         if a == "query_data": return self.llm.generate_json(build_query_data_input_prompt(s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence[-3:]], get_db_schema(self.settings.sqlite_db_path), get_db_metadata(self.settings.sqlite_db_path, sample_rows=3)), model_id=self.settings.gemini_fast_model)["tool_input"]
         document_catalog = get_doc_index_metadata(self.settings.doc_index_path).get("documents", []) if a == "search_docs" else None
         built = self.llm.generate_json(build_tool_input_prompt(a, s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence[-3:]], self.tool_descriptions, document_catalog=document_catalog if isinstance(document_catalog, list) else None), model_id=self.settings.gemini_fast_model)
@@ -90,6 +169,11 @@ class AgentService:
             return raw
         filters = built.get("document_filters", [])
         normalized_filters = [str(item).strip() for item in filters if str(item).strip()] if isinstance(filters, list) else []
+        if isinstance(document_catalog, list):
+            targeted_filters, target_text = self._document_filter_for_active_subgoal(s, document_catalog, action_rationale)
+            if targeted_filters:
+                normalized_filters = targeted_filters
+                raw = self._targeted_search_query(raw, s, normalized_filters, document_catalog, target_text)
         return {"query": raw, "document_filters": normalized_filters}
     def reformulate_tool_input(self, s: AgentState, a: str, previous: object, error: Exception) -> str: return self.llm.generate_json(build_reformulate_tool_input_prompt(a, self._format_tool_input(previous), error, s.normalized_question), model_id=self.settings.gemini_fast_model).get("tool_input", self._format_tool_input(previous))
     def _label(self, s: AgentState) -> str: return next((g.description for g in s.subgoals if g.status != "done"), s.subgoals[0].description if s.subgoals else "Answer the question")
@@ -119,7 +203,7 @@ class AgentService:
         s.local_doc_attempted, s.web_fallback_used = s.local_doc_attempted or a == "search_docs", s.web_fallback_used or a == "web_search"; summary = summarize_tool_result(a, results); self._store(s, a, tool_input, results); self._progress(s, a, results); s.trace.append(TraceStep(step_number=step, action=a, rationale=rationale, tool_input=self._format_tool_input(tool_input), result_summary=summary, status="ok", retry_count=retry_count, state_before=before, state_after=state_snapshot(s))); return summary
     def log_tool_error(self, s: AgentState, a: str, rationale: str, tool_input: object, error: Exception, retry_count: int = 0, *, step_number: int | None = None) -> None: s.trace.append(TraceStep(step_number=step_number if step_number is not None else s.steps_used, action=a, rationale=rationale, tool_input=self._format_tool_input(tool_input), result_summary=str(error), status="error", retry_count=retry_count, state_before=state_snapshot(s), state_after=state_snapshot(s)))
     def run_tool_with_retry(self, s: AgentState, a: str, rationale: str) -> str:
-        tool_input = self.build_tool_input(s, a)
+        tool_input = self.build_tool_input(s, a, rationale)
         step_number = s.steps_used + 1
         exc = None
         try: return self.run_tool(s, a, tool_input, rationale, step_number=step_number, count_step=True)
@@ -140,6 +224,7 @@ class AgentService:
             related_subgoal = str(update.get("related_subgoal", "")).strip()
             if related_subgoal:
                 evidence.related_subgoal = related_subgoal
+                #here starts the agent loop 
     def apply_subgoal_updates(self, s: AgentState, updates: list[dict]) -> None:
         by = {g.description: g for g in s.subgoals}
         for u in updates or []:
@@ -170,3 +255,4 @@ class AgentService:
         if s.steps_used >= self.max_tool_calls and s.status == "running": s.status, s.final_answer = "refused", "Stopped after reaching the hard limit of 8 tool calls."
         if s.status == "answered" and not s.final_answer: s.final_answer = self.compose_answer(s, direct_answer=False)
         return self.finalize(s)
+#loops ending here it uses agent support to run the loop
