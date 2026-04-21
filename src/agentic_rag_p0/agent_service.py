@@ -7,7 +7,7 @@ from .data_tool import get_db_metadata, get_db_schema, query_data
 from .document_tool import get_doc_index_metadata, search_docs
 from .llm import GeminiClient
 from .models import AgentRunResult, EvidenceItem, Subgoal, TraceStep
-from .prompt_builders import build_choose_next_action_prompt, build_compose_answer_prompt, build_direct_answer_prompt, build_plan_prompt, build_query_data_input_prompt, build_reformulate_tool_input_prompt, build_sufficiency_with_evidence_review_prompt, build_tool_input_prompt, build_understand_question_prompt
+from .prompt_builders import build_cap_final_answer_prompt, build_choose_next_action_prompt, build_compose_answer_prompt, build_direct_answer_prompt, build_plan_prompt, build_query_data_input_prompt, build_reformulate_tool_input_prompt, build_sufficiency_with_evidence_review_prompt, build_tool_input_prompt, build_understand_question_prompt
 from .web_tool import web_search
 MAX_TOOL_CALLS = 8
 TOOL_DESCRIPTIONS = {"search_docs": "Use when the answer should come from the local unstructured corpus. Input must be a short natural-language retrieval query. Output is top chunks with filename and page citations.", "query_data": "Use when the answer depends on structured CSV-backed tables. Input must be a read-only SQL SELECT/WITH query over the SQLite database. Output is rows, columns, and row_count.", "web_search": "Use only for recent or external information not covered by local docs/data. Input must be under 10 words. Output is snippets with URL and publication date."}
@@ -233,6 +233,20 @@ class AgentService:
     def compose_answer(self, s: AgentState, *, direct_answer: bool) -> str:
         if direct_answer: return self.llm.generate_text(build_direct_answer_prompt(s.normalized_question), model_id=self.settings.gemini_fast_model)
         composed = self.llm.generate_json(build_compose_answer_prompt(s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence if e.usable]), model_id=self.settings.gemini_pro_model); used = set(composed.get("used_evidence_ids", [])); s.citations = [e.source_reference for e in s.evidence if e.evidence_id in used] or sorted({e.source_reference for e in s.evidence if e.usable}); return self._append_structured_tables(composed.get("answer", ""), used, s.evidence)
+    def finalize_after_cap(self, s: AgentState) -> None:
+        usable = [e.to_dict() for e in s.evidence if e.usable]
+        if not usable:
+            s.status, s.final_answer = "refused", "Stopped after reaching the hard limit of 8 tool calls without enough usable evidence to answer."
+            return
+        composed = self.llm.generate_json(build_cap_final_answer_prompt(s.normalized_question, s.plan_summary, [g.to_dict() for g in s.subgoals], usable), model_id=self.settings.gemini_pro_model)
+        outcome = str(composed.get("outcome", "refuse")).strip().lower()
+        used = set(composed.get("used_evidence_ids", []))
+        if outcome in {"answer", "partial"} and str(composed.get("answer", "")).strip():
+            s.status = "answered"
+            s.citations = [e.source_reference for e in s.evidence if e.evidence_id in used] or sorted({e.source_reference for e in s.evidence if e.usable})
+            s.final_answer = self._append_structured_tables(str(composed.get("answer", "")), used, s.evidence)
+            return
+        s.status, s.final_answer = "refused", str(composed.get("answer", "")).strip() or "Stopped after reaching the hard limit of 8 tool calls before enough relevant evidence was gathered."
     def finalize(self, s: AgentState) -> AgentRunResult: return AgentRunResult(question=s.question, normalized_question=s.normalized_question or s.question, plan_summary=s.plan_summary, final_answer=s.final_answer, citations=s.citations or sorted({e.source_reference for e in s.evidence}), citation_map=[{"evidence_id": e.evidence_id, "source_reference": e.source_reference, "related_subgoal": e.related_subgoal, "usable": e.usable} for e in s.evidence], steps_used=s.steps_used, status=s.status, trace=[t.to_dict() for t in s.trace], subgoals=[g.to_dict() for g in s.subgoals], evidence=[e.to_dict() for e in s.evidence])
     def run(self, question: str):
         s = self.initialize_state(question); u = self.understand_question(question); self.hydrate_understanding(s, u)
@@ -252,7 +266,7 @@ class AgentService:
                 s.forced_next_action, s.forced_next_rationale = next_action, suff.get("reason", "")
             if outcome == "sufficient" or early: s.status = "answered"; break
             if outcome == "refuse": s.status, s.final_answer = "refused", suff.get("reason", "I could not gather enough grounded evidence to answer."); break
-        if s.steps_used >= self.max_tool_calls and s.status == "running": s.status, s.final_answer = "refused", "Stopped after reaching the hard limit of 8 tool calls."
+        if s.steps_used >= self.max_tool_calls and s.status == "running": self.finalize_after_cap(s)
         if s.status == "answered" and not s.final_answer: s.final_answer = self.compose_answer(s, direct_answer=False)
         return self.finalize(s)
 #loops ending here it uses agent support to run the loop

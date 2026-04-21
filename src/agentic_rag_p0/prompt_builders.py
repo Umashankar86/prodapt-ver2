@@ -181,7 +181,17 @@ The Input must be specific for every tool and follow the rules:
 - for web_search , use why or what or how or when or which in the query to make it more specific and natural as if a person is asking this query to a search engine. also use adverbs and nouns to make the query more specific and natural.
 - For search_docs, return a concise query string optimized for retrieving relevant documents. Use keywords and filters based on the question, plan, and current evidence. Do not return a full sentence.
 - For search_docs, you may also choose up to 2 document containers from the document catalog when the likely source documents are clear. Prefer selecting the most relevant document containers instead of searching every document.
+- Additional search_docs query quality rule: write retrieval queries as dense keywords, not instructions. Do not start with words like "Search", "Find", "Retrieve", or "Look for".
+- Additional search_docs query quality rule: for margin/profit driver questions, include section and driver terms such as "management discussion analysis", "operating margin", "cost of sales", "employee cost", "subcontractor cost", "pricing", "utilization", "efficiency", "large deals", "FY2024", and the company name when relevant.
+- Additional search_docs query quality rule: prefer queries like "TCS operating margin pricing models efficiency FY2024 management discussion" instead of "Search the TCS annual report to find factors influencing operating margin".
+- Strict search_docs rule: never copy a subgoal, rationale, or task sentence verbatim into tool_input. Always rewrite it into 5-12 dense retrieval keywords.
+- Strict search_docs rule: remove instruction verbs and filler words such as "identify", "extract", "factors influencing", "from the document", "annual report", "find information", "during that period", and keep only entity, metric, period, section, and driver terms.
+- Strict search_docs rule: bad query = "Identify and extract factors influencing TCS operating margin in Fiscal Year 2024 from the tcs.pdf document"; good query = "TCS operating margin FY2024 margin performance utilization productivity realization currency hikes infrastructure".
+- Strict search_docs rule: bad query = "Search Infosys annual report for factors contributing to operating margin"; good query = "Infosys operating margin FY2024 cost efforts employee cost subcontractor cost management discussion".
 - For web_search, return a concise query string optimized for retrieving relevant web results. Use keywords from the question, plan, and evidence gaps. Prefer a query a person would naturally type into a search engine.
+- For web_search, use a hybrid strategy for multi-entity questions: if the user's question is explicitly comparative and there is not yet any usable web evidence for the comparison, one mixed comparative query is allowed.
+- For web_search, after one mixed comparative web query or when a specific company/entity/subgoal is still weak, generate the query for exactly ONE unresolved company/entity/subgoal only. Do not keep repeating mixed multi-company queries.
+- For targeted web_search, keep the other unresolved companies/entities/subgoals for later calls through the subgoal state. Example targeted queries: "Why did Infosys operating margin change FY2024" or "Why did TCS operating margin change FY2024".
 - eg of web query in case of something based on tcs current stock price write the query as "whats the current stock price of tcs " also use the adverbs and nouns dont make the prompt bland like "TCS margin improvement FY2024 reasons" like this this does not provide any good info tha api we are using here is Tavily Api constrct a prompt fot it.
 Return JSON only:
 {{do
@@ -274,6 +284,22 @@ Additional evidence review requirement:
 - Do not invent new evidence ids. Only update evidence ids present in "Evidence so far".
 - Keep the original sufficiency fields and add "evidence_updates" to the same JSON object.
 
+Additional web fallback targeting requirement:
+- For explicitly comparative questions, one mixed comparative web_search is acceptable when no usable web evidence exists yet for the comparison.
+- After one mixed comparative web_search, or when one company/entity/subgoal remains weaker than the others, choose exactly ONE target for the next web_search.
+- In "reason", state whether the next web_search should be mixed comparative or targeted to one selected company/entity/subgoal.
+- Do not repeatedly ask web_search to cover multiple companies/entities once targeted follow-up is needed.
+
+Additional strict sufficiency requirement for explanation/driver questions:
+- Treat evidence as sufficient only when it directly supports the full answer the user asked for, not just one part of it.
+- Check all required dimensions before marking sufficient: entity, metric/topic, comparison side, requested scope, claim type, source relevance, explanation quality, and completeness.
+- Mark evidence as usable but not sufficient when it is merely adjacent, generic, background context, risk boilerplate, broad strategy text, a cost category without causal explanation, or a fact that needs a large inference to answer the question.
+- If the answer would need careful wording like "may have", "could suggest", "not directly stated", or "inferred from", mark the related subgoal "partial" unless another independent evidence item supports the same claim.
+- If any required entity, comparison side, driver, reason, or explanation is only partially supported, choose outcome="continue" and set next_action="web_search" unless a clearly different local document search is justified.
+- For multi-part or multi-entity questions, do not mark the whole answer sufficient when one part is strong and another part is generic, adjacent, or inferred. Continue for the weaker part.
+- In the reason, name the weak entity/subgoal and explain the evidence gap in generic terms such as "generic support", "indirect evidence", "missing direct driver", "weak causal link", "incomplete comparison", or "background-only evidence".
+- Do not let a structured value alone complete an explanation/driver subgoal. Structured values can satisfy the numeric part, but the explanation still needs direct qualitative support.
+
 Required additional JSON field:
 {{
   "evidence_updates": [
@@ -329,6 +355,39 @@ Return JSON only:
 Question: {normalized_question}
 Plan summary: {plan_summary}
 Evidence:
+{json.dumps(evidence_payload, indent=2)}
+"""
+
+
+def build_cap_final_answer_prompt(
+    normalized_question: str,
+    plan_summary: str,
+    subgoals_payload: list[dict],
+    evidence_payload: list[dict],
+) -> str:
+    return f"""
+You are finalizing an agentic RAG answer after the tool-call budget is exhausted.
+Use only the usable evidence below. Do not invent facts.
+
+First judge whether the evidence is good enough to answer the user's actual question:
+- If the evidence answers the main question reasonably well, set outcome="answer" and answer normally. Do not mention tool limits.
+- If the evidence answers only part of the question, set outcome="partial" and answer the supported part carefully. Do not mention tool limits. Briefly say which requested part is not fully supported.
+- If the evidence is weak, mostly unrelated, or less than about half relevant to the question, set outcome="refuse" and explain that the tool-call limit was reached before enough relevant evidence was gathered.
+- Do not say the tool limit was reached when outcome is "answer" or "partial".
+- Prefer careful language such as "the available evidence suggests" when the evidence supports an inference but is not a direct company explanation.
+
+Return JSON only:
+{{
+  "outcome": "answer|partial|refuse",
+  "answer": "string",
+  "used_evidence_ids": ["string"]
+}}
+
+Question: {normalized_question}
+Plan summary: {plan_summary}
+Subgoals:
+{json.dumps(subgoals_payload, indent=2)}
+Usable evidence:
 {json.dumps(evidence_payload, indent=2)}
 """
 
