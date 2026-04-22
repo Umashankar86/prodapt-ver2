@@ -206,6 +206,83 @@ Document catalog: {json.dumps(document_catalog or [], indent=2)}
 """
 
 
+def build_weighted_search_docs_input_prompt(
+    normalized_question: str,
+    plan_summary: str,
+    current_evidence: list[dict],
+    tool_descriptions: dict[str, str],
+    document_catalog: list[dict] | None = None,
+) -> str:
+    return f"""
+Generate the input for the tool `search_docs`.
+Tool description: {tool_descriptions["search_docs"]}
+
+Return JSON only with this shape:
+{{
+  "tool_input": "short natural-language retrieval query",
+  "document_filters": ["filename.pdf"],
+  "weighted_terms": {{
+    "must_have": ["string"],
+    "should_have": ["string"],
+    "context": ["string"],
+    "route_only": ["string"]
+  }}
+}}
+
+Weighted retrieval rules:
+- Keep this generic. Do not assume any current PDF, company, domain, or document type.
+- `tool_input` should be a concise readable query for the missing information.
+- `document_filters` may include up to 2 filenames only when the document catalog clearly identifies the likely source.
+
+Hard constraints for `must_have`:
+- Every `must_have` term must be a searchable content phrase, not a user-intent phrase.
+- Never include standalone generic intent words in `must_have`: reason, reasons, cause, causes, why, explanation, explain, details, information, impact, effect, analysis, summary, overview, factors, drivers, contributors.
+- Never include a broad direction/change word by itself in `must_have`: increase, decrease, rise, fall, growth, decline, reduction, improvement, higher, lower, change.
+- If a candidate `must_have` is mostly generic intent, move it to `should_have` or drop it.
+- Before returning JSON, validate `must_have`: remove any term that would still make sense for almost any document or topic.
+
+- `must_have` contains the searchable subject of the question: the specific metric/topic, event, action, claim, comparison object, or answer target.
+- Prefer specific 2-4 word noun phrases in `must_have` when possible, rather than isolated generic words.
+- Do not put standalone generic intent words in `must_have`, such as reason, reasons, cause, causes, why, explanation, details, information, impact, effect, analysis, summary, or overview.
+- Put broad direction words such as increase, decrease, rise, fall, improvement, decline, higher, or lower in `should_have` unless they are paired with the specific metric/topic/event.
+- `should_have` contains helpful synonyms, causal/explanation words, related concepts, and alternate wording.
+- `context` contains years, dates, timeframes, document section hints, or other narrowing context.
+- `route_only` contains entity names, document names, people, teams, companies, or places that should mainly choose the document/source and should not dominate semantic retrieval inside that source.
+- For increase/decrease/change questions, include generic directional synonyms in `should_have`, such as increase/growth/rise/improvement or decrease/decline/reduction/lower.
+- For why/reason/explanation questions, include generic causal words in `should_have`, such as reason, cause, because, due, driven, attributable, influenced, headwind, tailwind.
+- If a generic intent or direction word is important, pair it with the searchable subject before placing it in `must_have`; otherwise keep it in `should_have`.
+- Expand vague user terms into common, domain-neutral noun phrases only when the wording or catalog supports the expansion. Keep expansions conservative and retrieval-focused.
+- Do not put filler words, instruction verbs, or whole subgoals in weighted terms.
+- Avoid deterministic recommendations or conclusions. This prompt only builds retrieval input.
+
+Generic examples:
+- Question: "Why did response time increase in 2024?"
+  Bad `must_have`: ["response time increase", "reasons"]
+  Good `must_have`: ["response time"]
+  Good `should_have`: ["increase", "delay", "latency", "reason", "cause", "due"]
+  Good `context`: ["2024"]
+- Question: "What caused customer complaints to fall in Q2?"
+  Bad `must_have`: ["complaints fall", "cause"]
+  Good `must_have`: ["customer complaints"]
+  Good `should_have`: ["fall", "decline", "reduction", "cause", "because", "driver"]
+  Good `context`: ["Q2"]
+- Question: "Summarize the impact of policy changes on remote work."
+  Bad `must_have`: ["summary", "impact"]
+  Good `must_have`: ["policy changes", "remote work"]
+  Good `should_have`: ["impact", "effect", "changed", "influenced"]
+- Question: "Why did Team Alpha miss the delivery date?"
+  Bad `must_have`: ["Team Alpha", "why", "miss"]
+  Good `must_have`: ["delivery date"]
+  Good `should_have`: ["missed", "delay", "reason", "cause", "blocker"]
+  Good `route_only`: ["Team Alpha"]
+
+Question: {normalized_question}
+Plan summary: {plan_summary}
+Current evidence: {json.dumps(current_evidence, indent=2)}
+Document catalog: {json.dumps(document_catalog or [], indent=2)}
+"""
+
+
 def build_sufficiency_prompt(
     normalized_question: str,
     action: str,

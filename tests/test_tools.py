@@ -142,6 +142,12 @@ class ToolTests(unittest.TestCase):
             self.assertIn("2025", metadata["documents"][0]["temporal_markers"])
             self.assertIn("store_path", metadata["documents"][0])
             self.assertTrue(Path(metadata["documents"][0]["store_path"]).exists())
+            self.assertIn("page_store_path", metadata["documents"][0])
+            page_store_path = Path(metadata["documents"][0]["page_store_path"])
+            self.assertTrue(page_store_path.exists())
+            page_store = json.loads(page_store_path.read_text(encoding="utf-8"))
+            self.assertEqual(page_store["filename"], "wipro_report.txt")
+            self.assertEqual(page_store["pages"][0]["page_number"], 1)
 
     def test_upgrade_doc_metadata_enriches_old_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -172,6 +178,8 @@ class ToolTests(unittest.TestCase):
             self.assertIn("metadata_path", upgraded)
             self.assertTrue(upgraded["documents"])
             self.assertEqual(upgraded["documents"][0]["subject_hint"], "TCS")
+            self.assertIn("page_store_path", upgraded["documents"][0])
+            self.assertTrue(Path(upgraded["documents"][0]["page_store_path"]).exists())
 
     def test_query_data_blocks_multi_statement_sql(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

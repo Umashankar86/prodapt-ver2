@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
 import subprocess
@@ -52,6 +53,7 @@ BOILERPLATE_HINTS = [
 EXPLANATION_QUERY_TERMS = {"reason", "why", "explain", "driver", "drivers", "factor", "factors", "influence", "influenced", "cause", "caused", "drove", "drive"}
 FILENAME_NOISE_TOKENS = STOPWORDS | {"pdf", "txt", "md", "doc", "docx", "page", "pages", "part", "section", "chapter", "appendix", "final", "draft", "copy", "v1", "v2", "v3"}
 VECTOR_DIM = 1024
+EMBEDDING_HASH_ID = "blake2b-token-hash-v1"
 SECTION_HINTS = {
     "explanatory_text": ["overview", "summary", "background", "analysis", "discussion", "findings", "key points"],
     "tabular_reference": ["table", "figure", "appendix", "references", "glossary", "index"],
@@ -80,6 +82,10 @@ def _store_dir_path(index_path: Path) -> Path:
     return index_path.with_name(f"{index_path.stem}_stores")
 
 
+def _page_store_dir_path(index_path: Path) -> Path:
+    return index_path.with_name(f"{index_path.stem}_page_stores")
+
+
 def _store_slug(filename: str) -> str:
     stem = Path(filename).stem.lower()
     slug = re.sub(r"[^a-z0-9]+", "-", stem).strip("-")
@@ -87,8 +93,10 @@ def _store_slug(filename: str) -> str:
 
 
 def _hash_token(token: str) -> tuple[int, float]:
-    bucket = hash(token) % VECTOR_DIM
-    sign = -1.0 if (hash(f"{token}:sign") % 2) else 1.0
+    digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+    signed_digest = hashlib.blake2b(f"{token}:sign".encode("utf-8"), digest_size=1).digest()
+    bucket = int.from_bytes(digest, "big") % VECTOR_DIM
+    sign = -1.0 if (signed_digest[0] % 2) else 1.0
     return bucket, sign
 
 
@@ -156,6 +164,49 @@ def _extract_subject_hints(filename: str) -> list[str]:
 def _extract_metrics(text: str) -> list[str]:
     counts = Counter(token for token in _tokenize(text) if token not in STOPWORDS and len(token) > 3 and not token.isdigit())
     return [token for token, _ in counts.most_common(8)]
+
+
+def _profile_tokenize(text: str) -> list[str]:
+    return [
+        token
+        for token in _tokenize(text)
+        if token not in STOPWORDS and (len(token) > 2 or token.isdigit())
+    ]
+
+
+def _page_profile_texts(pages: list[tuple[int | None, str]]) -> list[tuple[int | None, str]]:
+    tokenized_pages = [_profile_tokenize(page_text) for _, page_text in pages]
+    doc_freq: Counter[str] = Counter()
+    for tokens in tokenized_pages:
+        doc_freq.update(set(tokens))
+    total_pages = max(1, len(tokenized_pages))
+    profiles: list[tuple[int | None, str]] = []
+    for (page_number, page_text), tokens in zip(pages, tokenized_pages, strict=False):
+        if not tokens:
+            continue
+        counts = Counter(tokens)
+        scored_terms = sorted(
+            counts,
+            key=lambda term: (
+                counts[term] * (math.log((1 + total_pages) / (1 + doc_freq[term])) + 1.0),
+                counts[term],
+                term,
+            ),
+            reverse=True,
+        )
+        top_terms = scored_terms[:40]
+        repeated_terms = []
+        for term in top_terms:
+            repeated_terms.extend([term] * min(3, counts[term]))
+        section_type = _detect_section_type(page_text)
+        section_title = _infer_section_title(page_text, section_type)
+        years = _extract_temporal_markers(page_text)
+        metrics = _extract_metrics(page_text)
+        profile_parts = [section_type, section_title, *years, *metrics, *repeated_terms]
+        profile_text = " ".join(part for part in profile_parts if part)
+        if profile_text:
+            profiles.append((page_number, profile_text))
+    return profiles
 
 
 def _commentary_score(text: str) -> float:
@@ -312,6 +363,7 @@ def _build_metadata_payload(chunks: list[DocChunk], backend: str, index_path: Pa
         "created_at": datetime.now(timezone.utc).isoformat(),
         "backend": backend,
         "embedding_dim": VECTOR_DIM,
+        "embedding_hash": EMBEDDING_HASH_ID,
         "stats": {
             "document_count": len(documents),
             "chunk_count": len(chunks),
@@ -346,12 +398,44 @@ def upgrade_doc_metadata(index_path: Path) -> dict[str, object]:
         )
     metadata_payload = _build_metadata_payload(enriched_chunks, str(payload.get("backend", "numpy")), index_path)
     metadata_path = _metadata_file_path(index_path)
+    store_dir = _store_dir_path(index_path)
+    page_store_dir = _page_store_dir_path(index_path)
+    store_dir.mkdir(parents=True, exist_ok=True)
+    page_store_dir.mkdir(parents=True, exist_ok=True)
+    chunks_by_filename: dict[str, list[DocChunk]] = {}
+    pages_by_filename: dict[str, dict[int | None, list[str]]] = {}
+    for chunk in enriched_chunks:
+        chunks_by_filename.setdefault(chunk.filename, []).append(chunk)
+        pages_by_filename.setdefault(chunk.filename, {}).setdefault(chunk.page_number, []).append(chunk.content)
+    document_store_paths: dict[str, str] = {}
+    page_topic_store_paths: dict[str, str] = {}
+    for filename, doc_chunks in chunks_by_filename.items():
+        store_index_path = store_dir / f"{_store_slug(filename)}.json"
+        _write_store_payload(store_index_path, doc_chunks)
+        document_store_paths[filename] = str(store_index_path)
+    for filename, page_chunks in pages_by_filename.items():
+        page_store_path = page_store_dir / f"{_store_slug(filename)}-pages.json"
+        doc_pages = [
+            (page_number, " ".join(page_chunks[page_number]))
+            for page_number in sorted(page_chunks, key=lambda value: value or 0)
+        ]
+        _write_page_topic_store(page_store_path, filename, doc_pages)
+        page_topic_store_paths[filename] = str(page_store_path)
+    for document in metadata_payload.get("documents", []):
+        if isinstance(document, dict):
+            filename = str(document.get("filename", ""))
+            if filename in document_store_paths:
+                document["store_path"] = document_store_paths[filename]
+            if filename in page_topic_store_paths:
+                document["page_store_path"] = page_topic_store_paths[filename]
     metadata_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
     payload["schema_version"] = 2
     payload["metadata_path"] = str(metadata_path)
     payload["documents"] = metadata_payload["documents"]
     payload["stats"] = metadata_payload["stats"]
     payload["chunks"] = [chunk.to_dict() for chunk in enriched_chunks]
+    payload["store_dir"] = str(store_dir)
+    payload["page_store_dir"] = str(page_store_dir)
     index_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return {
         "index_path": str(index_path),
@@ -359,6 +443,7 @@ def upgrade_doc_metadata(index_path: Path) -> dict[str, object]:
         "schema_version": 2,
         "document_count": len(metadata_payload["documents"]) if isinstance(metadata_payload["documents"], list) else 0,
         "chunk_count": len(enriched_chunks),
+        "page_store_dir": str(page_store_dir),
     }
 
 
@@ -410,9 +495,39 @@ def _write_store_payload(store_index_path: Path, chunks: list[DocChunk]) -> None
         "schema_version": 2,
         "backend": backend,
         "vector_dim": VECTOR_DIM,
+        "embedding_hash": EMBEDDING_HASH_ID,
         "chunks": [chunk.to_dict() for chunk in chunks],
     }
     store_index_path.write_text(json.dumps(store_payload, indent=2), encoding="utf-8")
+
+
+def _write_page_topic_store(
+    page_store_path: Path,
+    filename: str,
+    pages: list[tuple[int | None, str]],
+) -> None:
+    profiles = _page_profile_texts(pages)
+    vectors = np.vstack([_embed_text(profile_text) for _, profile_text in profiles]).astype("float32") if profiles else np.zeros((0, VECTOR_DIM), dtype="float32")
+    faiss = _load_faiss()
+    backend = "faiss" if faiss is not None else "numpy"
+    if profiles and faiss is not None:
+        index = faiss.IndexFlatIP(VECTOR_DIM)
+        index.add(vectors)
+        faiss.write_index(index, str(_index_file_path(page_store_path)))
+    else:
+        np.save(_vector_file_path(page_store_path), vectors)
+    payload = {
+        "schema_version": 2,
+        "backend": backend,
+        "vector_dim": VECTOR_DIM,
+        "embedding_hash": EMBEDDING_HASH_ID,
+        "filename": filename,
+        "pages": [
+            {"row": row, "filename": filename, "page_number": page_number}
+            for row, (page_number, _) in enumerate(profiles)
+        ],
+    }
+    page_store_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def build_doc_index(docs_dir: Path, index_path: Path) -> dict:
@@ -421,10 +536,13 @@ def build_doc_index(docs_dir: Path, index_path: Path) -> dict:
 
     chunks: list[DocChunk] = []
     chunks_by_filename: dict[str, list[DocChunk]] = {}
+    pages_by_filename: dict[str, list[tuple[int | None, str]]] = {}
     for doc_path in sorted(docs_dir.rglob("*")):
         if not doc_path.is_file() or doc_path.suffix.lower() not in SUPPORTED_DOC_SUFFIXES:
             continue
-        for page_number, page_text in _read_document_pages(doc_path):
+        doc_pages = _read_document_pages(doc_path)
+        pages_by_filename[doc_path.name] = doc_pages
+        for page_number, page_text in doc_pages:
             for local_idx, chunk_text in enumerate(_chunk_text(page_text)):
                 tokens = _tokenize(chunk_text)
                 if not tokens:
@@ -455,21 +573,31 @@ def build_doc_index(docs_dir: Path, index_path: Path) -> dict:
     metadata_payload = _build_metadata_payload(chunks, backend, index_path)
     store_dir = _store_dir_path(index_path)
     store_dir.mkdir(parents=True, exist_ok=True)
+    page_store_dir = _page_store_dir_path(index_path)
+    page_store_dir.mkdir(parents=True, exist_ok=True)
     document_store_paths: dict[str, str] = {}
+    page_topic_store_paths: dict[str, str] = {}
     for filename, doc_chunks in chunks_by_filename.items():
         store_index_path = store_dir / f"{_store_slug(filename)}.json"
         _write_store_payload(store_index_path, doc_chunks)
         document_store_paths[filename] = str(store_index_path)
+    for filename, doc_pages in pages_by_filename.items():
+        page_store_path = page_store_dir / f"{_store_slug(filename)}-pages.json"
+        _write_page_topic_store(page_store_path, filename, doc_pages)
+        page_topic_store_paths[filename] = str(page_store_path)
     for document in metadata_payload.get("documents", []):
         if isinstance(document, dict):
             filename = str(document.get("filename", ""))
             if filename in document_store_paths:
                 document["store_path"] = document_store_paths[filename]
+            if filename in page_topic_store_paths:
+                document["page_store_path"] = page_topic_store_paths[filename]
     metadata_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
     payload = {
         "schema_version": 2,
         "backend": backend,
         "vector_dim": VECTOR_DIM,
+        "embedding_hash": EMBEDDING_HASH_ID,
         "chunks": [chunk.to_dict() for chunk in chunks],
         "documents": metadata_payload["documents"],
         "stats": metadata_payload["stats"],
@@ -477,6 +605,7 @@ def build_doc_index(docs_dir: Path, index_path: Path) -> dict:
         "vector_fallback": str(_vector_file_path(index_path)),
         "metadata_path": str(metadata_path),
         "store_dir": str(store_dir),
+        "page_store_dir": str(page_store_dir),
     }
     index_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return {
@@ -486,6 +615,7 @@ def build_doc_index(docs_dir: Path, index_path: Path) -> dict:
         "metadata_path": str(metadata_path),
         "backend": backend,
         "schema_version": 2,
+        "page_store_dir": str(page_store_dir),
     }
 
 
@@ -534,6 +664,84 @@ def _score_chunk(query_tokens: list[str], chunk: DocChunk, idf_map: dict[str, fl
     return score
 
 
+def _page_matches(chunk: DocChunk, allowed_pages_by_filename: dict[str, set[int | None]]) -> bool:
+    allowed_pages = allowed_pages_by_filename.get(chunk.filename.lower())
+    return allowed_pages is None or chunk.page_number in allowed_pages
+
+
+def _retrieve_page_refs(
+    page_store_path: Path,
+    query_vector: np.ndarray,
+    top_k: int,
+) -> list[tuple[str, int | None, float]]:
+    if not page_store_path.exists():
+        return []
+    payload = json.loads(page_store_path.read_text(encoding="utf-8"))
+    pages = payload.get("pages", [])
+    if not isinstance(pages, list) or not pages:
+        return []
+    if payload.get("embedding_hash") != EMBEDDING_HASH_ID:
+        return []
+    search_k = min(max(top_k, 1), len(pages))
+    faiss = _load_faiss()
+    if faiss is not None and _index_file_path(page_store_path).exists():
+        index = faiss.read_index(str(_index_file_path(page_store_path)))
+        scores, indices = index.search(np.expand_dims(query_vector, axis=0), search_k)
+        refs: list[tuple[str, int | None, float]] = []
+        for idx, score in zip(indices[0], scores[0], strict=False):
+            if idx < 0 or int(idx) >= len(pages):
+                continue
+            if float(score) <= 0:
+                continue
+            page = pages[int(idx)]
+            if not isinstance(page, dict):
+                continue
+            refs.append((str(page.get("filename", payload.get("filename", ""))), page.get("page_number"), float(score)))
+        return refs
+
+    vector_path = _vector_file_path(page_store_path)
+    if not vector_path.exists():
+        return []
+    vectors = np.load(vector_path)
+    if len(vectors) == 0:
+        return []
+    scores = vectors @ query_vector
+    best_indices = np.argsort(scores)[::-1][:search_k]
+    refs = []
+    for idx in best_indices:
+        if float(scores[int(idx)]) <= 0:
+            continue
+        page = pages[int(idx)]
+        if not isinstance(page, dict):
+            continue
+        refs.append((str(page.get("filename", payload.get("filename", ""))), page.get("page_number"), float(scores[int(idx)])))
+    return refs
+
+
+def _selected_document_paths(
+    payload: dict,
+    lowered_filters: set[str],
+) -> tuple[list[Path], list[Path]]:
+    store_paths: list[Path] = []
+    page_store_paths: list[Path] = []
+    documents = payload.get("documents", [])
+    if not isinstance(documents, list):
+        return store_paths, page_store_paths
+    for document in documents:
+        if not isinstance(document, dict):
+            continue
+        filename = str(document.get("filename", "")).lower()
+        if lowered_filters and filename not in lowered_filters:
+            continue
+        store_path = document.get("store_path")
+        page_store_path = document.get("page_store_path")
+        if isinstance(store_path, str):
+            store_paths.append(Path(store_path))
+        if isinstance(page_store_path, str):
+            page_store_paths.append(Path(page_store_path))
+    return store_paths, page_store_paths
+
+
 def search_docs(
     index_path: Path,
     query: str,
@@ -551,19 +759,35 @@ def search_docs(
     lowered_filters = {item.lower() for item in filters if item}
     filtered_chunks = chunks
     selected_store_paths: list[Path] = []
+    selected_page_store_paths: list[Path] = []
     if lowered_filters:
         filtered_chunks = [chunk for chunk in chunks if chunk.filename.lower() in lowered_filters]
-        documents = payload.get("documents", [])
-        if isinstance(documents, list):
-            for document in documents:
-                if not isinstance(document, dict):
-                    continue
-                filename = str(document.get("filename", "")).lower()
-                store_path = document.get("store_path")
-                if filename in lowered_filters and isinstance(store_path, str):
-                    selected_store_paths.append(Path(store_path))
+    selected_store_paths, selected_page_store_paths = _selected_document_paths(payload, lowered_filters)
     idf_map = _idf(filtered_chunks)
     query_vector = _embed_text(query)
+    allowed_pages_by_filename: dict[str, set[int | None]] = {}
+    if selected_page_store_paths:
+        for page_store_path in selected_page_store_paths:
+            for filename, page_number, _score in _retrieve_page_refs(page_store_path, query_vector, top_k=max(top_k * 4, 12)):
+                key = filename.lower()
+                if not key:
+                    continue
+                allowed_pages_by_filename.setdefault(key, set()).add(page_number)
+    elif not lowered_filters:
+        _, page_store_paths = _selected_document_paths(payload, set())
+        for page_store_path in page_store_paths:
+            for filename, page_number, _score in _retrieve_page_refs(page_store_path, query_vector, top_k=max(top_k * 2, 6)):
+                key = filename.lower()
+                if not key:
+                    continue
+                allowed_pages_by_filename.setdefault(key, set()).add(page_number)
+        if allowed_pages_by_filename:
+            selected_store_paths, _ = _selected_document_paths(payload, set(allowed_pages_by_filename))
+    if allowed_pages_by_filename:
+        page_filtered = [chunk for chunk in filtered_chunks if _page_matches(chunk, allowed_pages_by_filename)]
+        if page_filtered:
+            filtered_chunks = page_filtered
+            idf_map = _idf(filtered_chunks)
     semantic_candidates: list[tuple[DocChunk, float]] = []
     if selected_store_paths:
         for store_path in selected_store_paths:
@@ -578,6 +802,7 @@ def search_docs(
                     chunks=store_chunks,
                     query_vector=query_vector,
                     top_k=max(top_k * 4, 16),
+                    allowed_pages_by_filename=allowed_pages_by_filename,
                 )
             )
     else:
@@ -587,6 +812,7 @@ def search_docs(
             chunks=chunks,
             query_vector=query_vector,
             top_k=max(top_k * 8, 24),
+            allowed_pages_by_filename=allowed_pages_by_filename,
         )
     lexical_candidates = sorted(
         (
@@ -642,22 +868,31 @@ def _retrieve_candidates(
     chunks: list[DocChunk],
     query_vector: np.ndarray,
     top_k: int,
+    allowed_pages_by_filename: dict[str, set[int | None]] | None = None,
 ) -> list[tuple[DocChunk, float]]:
     if not chunks:
         return []
+    allowed_pages = allowed_pages_by_filename or {}
+    search_k = len(chunks) if allowed_pages else min(top_k, len(chunks))
+    stored_embedding_hash = payload.get("embedding_hash")
     faiss = _load_faiss()
-    if faiss is not None and _index_file_path(index_path).exists():
+    if stored_embedding_hash == EMBEDDING_HASH_ID and faiss is not None and _index_file_path(index_path).exists():
         index = faiss.read_index(str(_index_file_path(index_path)))
-        scores, indices = index.search(np.expand_dims(query_vector, axis=0), min(top_k, len(chunks)))
+        scores, indices = index.search(np.expand_dims(query_vector, axis=0), search_k)
         candidates: list[tuple[DocChunk, float]] = []
         for idx, score in zip(indices[0], scores[0], strict=False):
-            if idx < 0:
+            if idx < 0 or int(idx) >= len(chunks):
                 continue
-            candidates.append((chunks[int(idx)], float(score)))
+            chunk = chunks[int(idx)]
+            if allowed_pages and not _page_matches(chunk, allowed_pages):
+                continue
+            candidates.append((chunk, float(score)))
+            if len(candidates) >= top_k:
+                break
         return candidates
 
     vector_path = _vector_file_path(index_path)
-    if not vector_path.exists():
+    if not vector_path.exists() or stored_embedding_hash != EMBEDDING_HASH_ID:
         vectors = np.vstack([_embed_text(chunk.content) for chunk in chunks]).astype("float32")
         np.save(vector_path, vectors)
     else:
@@ -665,8 +900,16 @@ def _retrieve_candidates(
     if len(vectors) == 0:
         return []
     scores = vectors @ query_vector
-    best_indices = np.argsort(scores)[::-1][: min(top_k, len(chunks))]
-    return [(chunks[int(idx)], float(scores[int(idx)])) for idx in best_indices]
+    best_indices = np.argsort(scores)[::-1][:search_k]
+    candidates = []
+    for idx in best_indices:
+        chunk = chunks[int(idx)]
+        if allowed_pages and not _page_matches(chunk, allowed_pages):
+            continue
+        candidates.append((chunk, float(scores[int(idx)])))
+        if len(candidates) >= top_k:
+            break
+    return candidates
 
 
 def get_doc_index_metadata(index_path: Path, sample_chunks: int = 5) -> dict[str, object]:

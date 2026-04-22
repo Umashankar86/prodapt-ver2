@@ -7,7 +7,7 @@ from .data_tool import get_db_metadata, get_db_schema, query_data
 from .document_tool import get_doc_index_metadata, search_docs
 from .llm import GeminiClient
 from .models import AgentRunResult, EvidenceItem, Subgoal, TraceStep
-from .prompt_builders import build_cap_final_answer_prompt, build_choose_next_action_prompt, build_compose_answer_prompt, build_direct_answer_prompt, build_plan_prompt, build_query_data_input_prompt, build_reformulate_tool_input_prompt, build_sufficiency_with_evidence_review_prompt, build_tool_input_prompt, build_understand_question_prompt
+from .prompt_builders import build_cap_final_answer_prompt, build_choose_next_action_prompt, build_compose_answer_prompt, build_direct_answer_prompt, build_plan_prompt, build_query_data_input_prompt, build_reformulate_tool_input_prompt, build_sufficiency_with_evidence_review_prompt, build_tool_input_prompt, build_understand_question_prompt, build_weighted_search_docs_input_prompt
 from .web_tool import web_search
 MAX_TOOL_CALLS = 8
 TOOL_DESCRIPTIONS = {"search_docs": "Use when the answer should come from the local unstructured corpus. Input must be a short natural-language retrieval query. Output is top chunks with filename and page citations.", "query_data": "Use when the answer depends on structured CSV-backed tables. Input must be a read-only SQL SELECT/WITH query over the SQLite database. Output is rows, columns, and row_count.", "web_search": "Use only for recent or external information not covered by local docs/data. Input must be under 10 words. Output is snippets with URL and publication date."}
@@ -160,13 +160,34 @@ class AgentService:
         if subject and subject not in lowered_query:
             return f"{subject} {raw_query}".strip()
         return raw_query
+    def _weighted_search_query(self, raw_query: str, weighted_terms: object) -> str:
+        if not isinstance(weighted_terms, dict):
+            return raw_query
+        parts: list[str] = []
+        weights = {"must_have": 4, "should_have": 2, "context": 1}
+        for key, repeat in weights.items():
+            terms = weighted_terms.get(key, [])
+            if not isinstance(terms, list):
+                continue
+            for term in terms:
+                text = str(term).strip()
+                if text:
+                    parts.extend([text] * repeat)
+        if raw_query.strip():
+            parts.append(raw_query.strip())
+        weighted_query = " ".join(parts).strip()
+        return weighted_query or raw_query
     def build_tool_input(self, s: AgentState, a: str, action_rationale: str = "") -> object:
         if a == "query_data": return self.llm.generate_json(build_query_data_input_prompt(s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence[-3:]], get_db_schema(self.settings.sqlite_db_path), get_db_metadata(self.settings.sqlite_db_path, sample_rows=3)), model_id=self.settings.gemini_fast_model)["tool_input"]
         document_catalog = get_doc_index_metadata(self.settings.doc_index_path).get("documents", []) if a == "search_docs" else None
-        built = self.llm.generate_json(build_tool_input_prompt(a, s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence[-3:]], self.tool_descriptions, document_catalog=document_catalog if isinstance(document_catalog, list) else None), model_id=self.settings.gemini_fast_model)
+        if a == "search_docs":
+            built = self.llm.generate_json(build_weighted_search_docs_input_prompt(s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence[-3:]], self.tool_descriptions, document_catalog=document_catalog if isinstance(document_catalog, list) else None), model_id=self.settings.gemini_fast_model)
+        else:
+            built = self.llm.generate_json(build_tool_input_prompt(a, s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence[-3:]], self.tool_descriptions, document_catalog=document_catalog if isinstance(document_catalog, list) else None), model_id=self.settings.gemini_fast_model)
         raw = str(built.get("tool_input", "")).strip()
         if a != "search_docs":
             return raw
+        weighted_query = self._weighted_search_query(raw, built.get("weighted_terms", {}))
         filters = built.get("document_filters", [])
         normalized_filters = [str(item).strip() for item in filters if str(item).strip()] if isinstance(filters, list) else []
         if isinstance(document_catalog, list):
@@ -174,7 +195,8 @@ class AgentService:
             if targeted_filters:
                 normalized_filters = targeted_filters
                 raw = self._targeted_search_query(raw, s, normalized_filters, document_catalog, target_text)
-        return {"query": raw, "document_filters": normalized_filters}
+                weighted_query = self._weighted_search_query(raw, built.get("weighted_terms", {}))
+        return {"query": weighted_query, "original_query": raw, "document_filters": normalized_filters, "weighted_terms": built.get("weighted_terms", {})}
     def reformulate_tool_input(self, s: AgentState, a: str, previous: object, error: Exception) -> str: return self.llm.generate_json(build_reformulate_tool_input_prompt(a, self._format_tool_input(previous), error, s.normalized_question), model_id=self.settings.gemini_fast_model).get("tool_input", self._format_tool_input(previous))
     def _label(self, s: AgentState) -> str: return next((g.description for g in s.subgoals if g.status != "done"), s.subgoals[0].description if s.subgoals else "Answer the question")
     def _store(self, s: AgentState, a: str, tool_input: object, r: object) -> None:
