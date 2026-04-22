@@ -2,6 +2,7 @@
   "schema_version": 2,
   "backend": "faiss",
   "vector_dim": 1024,
+  "embedding_hash": "blake2b-token-hash-v1",
   "chunks": [
     {
       "chunk_id": "tcs-p1-c1",
