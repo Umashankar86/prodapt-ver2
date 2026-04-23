@@ -1,0 +1,18 @@
+[
+  {
+    "question": "What was Infosys' operating margin in FY2025?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "How did Infosys' and TCS' operating margins compare in FY2025, and what drove each?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "What is the current stock price of Infosys?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "Which company should I invest in?",
+    "expected_status": "refused"
+  }
+]

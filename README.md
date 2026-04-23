@@ -4,6 +4,11 @@ Agentic RAG P0 is a small Python retrieval system that combines local document s
 
 The system is intentionally simple to run and inspect. The core agent lives in `src/agentic_rag_p0`, local corpora live under `data/`, and generated indexes, logs, and caches live under `artifacts/`.
 
+Supporting submission docs:
+
+- [DESIGN.md](DESIGN.md)
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
 ## What It Does
 
 - Searches local PDFs and text files with page and filename citations.
@@ -12,6 +17,14 @@ The system is intentionally simple to run and inspect. The core agent lives in `
 - Uses Gemini through Vertex AI for question understanding, planning, routing, sufficiency checks, and answer composition.
 - Records each run as structured JSON, including trace steps, evidence items, subgoal status, and citation mapping.
 - Caps each agent run at 8 tool calls to keep execution bounded.
+
+## Corpus Choice
+
+This repo uses the public-company financials corpus from the assignment:
+
+- Unstructured: annual reports for Infosys, TCS, and Wipro
+- Structured: 4 years of financial metrics per company in CSV form
+- Web: live search for current market and company information
 
 ## Project Layout
 
@@ -32,6 +45,8 @@ src/agentic_rag_p0/
   web_tool.py           # Tavily web search wrapper
   cli.py                # Command line entrypoint
 tests/
+docs/
+  ARCHITECTURE.md      # Architecture notes and diagram
 ```
 
 ## Setup
@@ -59,6 +74,12 @@ AGENTIC_RAG_DOC_INDEX=artifacts/docs_index.json
 AGENTIC_RAG_SQLITE_DB=artifacts/structured.db
 AGENTIC_RAG_ENABLE_LLM_CACHE=false
 AGENTIC_RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+```
+
+You can also start from:
+
+```bash
+cp .env.example .env
 ```
 
 `pypdf` is included in `requirements.txt`. If `pdftotext` is installed on the machine, the document loader will prefer it for PDF extraction.
@@ -97,6 +118,14 @@ Return only the plan, tools called, and final answer:
 PYTHONPATH=src python3 -m agentic_rag_p0.cli ask "How did Infosys' and TCS' operating margins compare in FY25, and what drove each?" --answer-only
 ```
 
+Representative questions:
+
+```bash
+PYTHONPATH=src python3 -m agentic_rag_p0.cli ask "What was Infosys' operating margin in FY2025?"
+PYTHONPATH=src python3 -m agentic_rag_p0.cli ask "What is the current stock price of Infosys?"
+PYTHONPATH=src python3 -m agentic_rag_p0.cli ask "How did Infosys' and TCS' operating margins compare in FY25, and what drove each?"
+```
+
 ## Use Tools Directly
 
 Search local documents:
@@ -131,6 +160,8 @@ The agent follows a compact loop:
 
 The final output includes the normalized question, plan summary, final answer, citations, citation map, trace, subgoals, evidence, tool count, and status.
 
+For the full component view and sequence diagram, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Retrieval Notes
 
 - `search_docs` is for the local unstructured corpus and can target specific document files.
@@ -138,6 +169,47 @@ The final output includes the normalized question, plan summary, final answer, c
 - `web_search` is a fallback for recent, external, or locally missing information.
 - The routing loop prefers local evidence when metadata indicates a relevant local document exists.
 - Document and page retrieval use learned SentenceTransformers embeddings, then hybrid ranking emphasizes exact metric/topic terms while keeping generic intent words lighter to reduce noisy retrieval.
+
+## Evaluation
+
+The repository includes an `EVALUATION.md` report and a lightweight evaluation runner in `src/agentic_rag_p0/evaluation.py`.
+
+Run the current unit-test-backed evaluation:
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+```
+
+Run the evaluation helper against a JSON question set:
+
+```bash
+PYTHONPATH=src python3 - <<'PY'
+from pathlib import Path
+from agentic_rag_p0.evaluation import run_evaluation
+summary = run_evaluation(
+    Path("evaluation/questions.example.json"),
+    Path("artifacts/evaluation_summary.json"),
+)
+print(summary)
+PY
+```
+
+The expected question-set format is a JSON list like:
+
+```json
+[
+  {
+    "question": "What was Infosys' operating margin in FY2025?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "Which company should I invest in?",
+    "expected_status": "refused"
+  }
+]
+```
+
+A starter file is included at `evaluation/questions.example.json`.
 
 ## Tests
 
@@ -159,3 +231,10 @@ PYTHONPATH=src python3 -m unittest tests.test_doc_loop_guard -v
 - SQL execution is restricted to read-only statements.
 - LLM response caching is optional and controlled by `AGENTIC_RAG_ENABLE_LLM_CACHE`.
 - The CLI uses `PYTHONPATH=src` because this repo is a lightweight source tree rather than a packaged install.
+
+## Known Failure Modes
+
+- Prompt payloads are large because corpus metadata is embedded into several LLM stages, which can increase latency and occasionally contribute to provider rate-limit failures.
+- Multi-tool questions that require `search_docs` depend on the local embedding stack being installed and healthy.
+- Refusal behavior is still prompt-driven rather than fully deterministic in code, so borderline out-of-scope questions can vary by model output.
+- Web-search answers are only as good as the returned snippets and publication metadata; recent market questions may need manual source review.
