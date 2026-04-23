@@ -51,8 +51,20 @@ Planning rules:
 - Do not create extra subgoals once one local tool can answer the question.
 - If local docs are likely to contain only indirect or comparative commentary, keep the plan open for a later redirect(AS THE AGENT CAN REDIRECT IF U THINK THE DATA IS NOT ENOUGH TO WEB SEARCH) rather than assuming local evidence will be enough.
 - in case the question has anything related to current or future data or explicitly mentions that it needs current or future data prefer web search this is important when the words current is given dont plan to searh locally but use the web plan to search the we 
-.
-eturn JSON only with this shape:
+- Distinguish between:
+  - valid domain questions answerable by web_search even if they are not in local docs/data, such as recent company, sector, stock-market, or business developments
+  - unrelated general-knowledge, trivia, joke, riddle, or creative requests that are outside the system's business/company/financial scope
+- If the question is outside the supported business/company/financial scope of all available tools, do not make a normal answer plan.
+- For such out-of-scope questions, return an out-of-scope plan:
+  - `plan_summary` should clearly say the question is outside supported scope
+  - `answer_requirements` should be []
+  - `subgoals` should contain one blocked subgoal describing refusal
+  - `likely_tools` should be []
+  - `risks` should include `out_of_scope`
+- Do not mark recent company, stock, sector, or market questions as out-of-scope just because the local corpus is insufficient; those should normally plan for web_search.
+- Example out-of-scope question: "What is the airspeed velocity of an unladen swallow?"
+
+Return JSON only with this shape:
 {{
   "plan_summary": "1-3 sentence plan",
   "answer_requirements": ["string"],
