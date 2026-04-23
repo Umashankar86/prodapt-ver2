@@ -44,6 +44,7 @@ Planning rules:
 - Keep subgoals minimal. Prefer 1 subgoal for single-fact questions.
 - If structured metadata already shows the needed metric/entity/year columns, prefer query_data first.
 - If document metadata shows strong topical alignment with the question and potential for direct evidence, prefer search_docs first.
+- if the data changes with time like current rate stock prices go with web_search not local docs dynamic data with relation to time should be planned to use web search.
 - REMEMBER ITS BETTER DATA QUALITY OVER QUANTITY. DO NOT PLAN TO CALL A TOOL JUST TO CALL A TOOL.
 - In case you are using search_docs if you are not satisfied with the quality of the retrieved evidence, let the system redirect to web_search instead of creating new subgoals for more search_docs calls to check if the data is enough or not be a midly strict analyzer.
 - Use web_search only if the local structured/doc metadata does not appear sufficient or the question is explicitly recent/current.
@@ -89,6 +90,7 @@ Choose exactly one next action from: search_docs, query_data, web_search, answer
 
 Constraints:
 - Follow the current plan and pending subgoals unless the evidence clearly justifies a different next step.
+- in case of dynamic data which can change witht time prefer web_search.
 - Prefer answer when the current evidence already covers the subgoals.
 - If at least one usable evidence item directly answers the question and there is no unresolved required comparison/explanation, choose answer.
 - Use web_search only when recent or external information is needed.

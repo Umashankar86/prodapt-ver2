@@ -22,7 +22,9 @@ class AgentService:
         return {"structured": structured, "documents": documents}
     def understand_question(self, q: str) -> dict: return self.llm.generate_json(build_understand_question_prompt(q, self._meta()), model_id=self.settings.gemini_fast_model)
     def plan(self, q: str, u: dict) -> dict: return self.llm.generate_json(build_plan_prompt(q, u, self._meta(), self.tool_descriptions), model_id=self.settings.gemini_fast_model)
-    def hydrate_understanding(self, s: AgentState, u: dict) -> None: s.normalized_question = u.get("normalized_question", s.question).strip() or s.question
+    def hydrate_understanding(self, s: AgentState, u: dict) -> None:
+        s.normalized_question = u.get("normalized_question", s.question).strip() or s.question
+        s.recent_intent = bool(u.get("recent_intent", False))
     def hydrate_plan(self, s: AgentState, p: dict) -> None:
         s.plan_summary, s.answer_requirements, s.likely_tools, s.risks = p.get("plan_summary", ""), p.get("answer_requirements", []), p.get("likely_tools", []), p.get("risks", [])
         s.subgoals = [Subgoal(**g) for g in p.get("subgoals", [])] or [Subgoal(description="Answer the user's question")]
@@ -192,6 +194,8 @@ class AgentService:
             return [], ""
         return filters, target_text
     def _guard_web_fallback(self, s: AgentState, decision: dict) -> dict:
+        if s.recent_intent:
+            return decision
         if decision.get("action") != "web_search" or not self._open(s):
             return decision
         filters, target_text = self._unsearched_local_doc_target(s, str(decision.get("rationale", "")))

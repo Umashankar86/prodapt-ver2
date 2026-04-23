@@ -126,6 +126,81 @@ class WebFirstOnLowCoverageLLM:
 
 
 class CoverageRoutingTests(unittest.TestCase):
+    def test_recent_intent_bypasses_web_fallback_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_dir = root / "docs"
+            docs_dir.mkdir()
+            settings = Settings(
+                docs_dir=docs_dir,
+                structured_dir=root / "structured",
+                doc_index_path=root / "artifacts" / "docs_index.json",
+                sqlite_db_path=root / "artifacts" / "structured.db",
+                llm_cache_path=root / "artifacts" / "llm_cache.json",
+                llm_log_path=root / "artifacts" / "llm_responses.json",
+                tavily_api_key="test-key",
+                vertex_project_id="test-project",
+                vertex_location="us-central1",
+                gemini_fast_model="fake-fast",
+                gemini_pro_model="fake-pro",
+                continuity_enabled=False,
+            )
+            service = AgentService(settings, llm_client=RedirectToWebLLM())
+            state = service.initialize_state("What is the current stock price of TCS?")
+            state.normalized_question = state.question
+            state.recent_intent = True
+            state.subgoals = [Subgoal(description="Find the current TCS stock price.", status="pending", notes="")]
+
+            with patch.object(service, "_unsearched_local_doc_target", return_value=(["tcs.pdf.txt"], "Find the current TCS stock price.")):
+                decision = service._guard_web_fallback(
+                    state,
+                    {
+                        "action": "web_search",
+                        "rationale": "Need live market data.",
+                        "refusal_reason": "",
+                    },
+                )
+
+            self.assertEqual(decision["action"], "web_search")
+
+    def test_non_recent_guard_still_redirects_to_local_doc(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_dir = root / "docs"
+            docs_dir.mkdir()
+            settings = Settings(
+                docs_dir=docs_dir,
+                structured_dir=root / "structured",
+                doc_index_path=root / "artifacts" / "docs_index.json",
+                sqlite_db_path=root / "artifacts" / "structured.db",
+                llm_cache_path=root / "artifacts" / "llm_cache.json",
+                llm_log_path=root / "artifacts" / "llm_responses.json",
+                tavily_api_key="test-key",
+                vertex_project_id="test-project",
+                vertex_location="us-central1",
+                gemini_fast_model="fake-fast",
+                gemini_pro_model="fake-pro",
+                continuity_enabled=False,
+            )
+            service = AgentService(settings, llm_client=RedirectToWebLLM())
+            state = service.initialize_state("Why did TCS margin improve in FY24?")
+            state.normalized_question = state.question
+            state.recent_intent = False
+            state.subgoals = [Subgoal(description="Find TCS FY24 margin explanation.", status="pending", notes="")]
+
+            with patch.object(service, "_unsearched_local_doc_target", return_value=(["tcs.pdf.txt"], "Find TCS FY24 margin explanation.")):
+                decision = service._guard_web_fallback(
+                    state,
+                    {
+                        "action": "web_search",
+                        "rationale": "Need explanation.",
+                        "refusal_reason": "",
+                    },
+                )
+
+            self.assertEqual(decision["action"], "search_docs")
+            self.assertIn("tcs.pdf.txt", decision["rationale"])
+
     def test_web_fallback_searches_untried_matching_local_doc_first(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

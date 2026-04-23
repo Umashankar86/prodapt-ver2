@@ -22,6 +22,7 @@ class AgentState:
     final_answer: str = ""
     citations: list[str] = field(default_factory=list)
     recent_search_signatures: list[str] = field(default_factory=list)
+    recent_intent: bool = False
     local_doc_attempted: bool = False
     free_web_redirect_available: bool = False
     web_fallback_used: bool = False

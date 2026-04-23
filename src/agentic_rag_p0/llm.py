@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from time import perf_counter
 
 from .cache import JsonCache, JsonLog
 from .config import Settings
@@ -41,30 +42,65 @@ class GeminiClient:
         *,
         model_id: str | None = None,
         include_thoughts: bool = False,
+        call_kind: str = "text",
     ) -> str:
         self._ensure_client()
         assert self._client is not None
         assert self._types is not None
 
+        resolved_model = model_id or self.settings.gemini_fast_model
         config = self._types.GenerateContentConfig(
             thinking_config=self._types.ThinkingConfig(include_thoughts=include_thoughts)
         )
         cache_key = None
         if self._cache is not None:
-            cache_key = self._cache.build_key(model_id or self.settings.gemini_fast_model, prompt)
+            cache_key = self._cache.build_key(resolved_model, prompt)
             cached = self._cache.get(cache_key)
             if cached is not None:
-                self._log_response(prompt, model_id or self.settings.gemini_fast_model, cached, include_thoughts, cached=True)
+                self._log_response(
+                    prompt,
+                    resolved_model,
+                    cached,
+                    include_thoughts,
+                    cached=True,
+                    call_kind=call_kind,
+                    duration_ms=0,
+                    status="ok",
+                )
                 return cached
-        response = self._client.models.generate_content(
-            model=model_id or self.settings.gemini_fast_model,
-            contents=prompt,
-            config=config,
-        )
-        text = self._extract_text(response)
+        started = perf_counter()
+        try:
+            response = self._client.models.generate_content(
+                model=resolved_model,
+                contents=prompt,
+                config=config,
+            )
+            text = self._extract_text(response)
+        except Exception as exc:
+            self._log_response(
+                prompt,
+                resolved_model,
+                "",
+                include_thoughts,
+                cached=False,
+                call_kind=call_kind,
+                duration_ms=int((perf_counter() - started) * 1000),
+                status="error",
+                error=str(exc),
+            )
+            raise
         if self._cache is not None and cache_key is not None:
             self._cache.set(cache_key, text)
-        self._log_response(prompt, model_id or self.settings.gemini_fast_model, text, include_thoughts, cached=False)
+        self._log_response(
+            prompt,
+            resolved_model,
+            text,
+            include_thoughts,
+            cached=False,
+            call_kind=call_kind,
+            duration_ms=int((perf_counter() - started) * 1000),
+            status="ok",
+        )
         return text
 
     def generate_json(
@@ -78,6 +114,7 @@ class GeminiClient:
             prompt,
             model_id=model_id,
             include_thoughts=include_thoughts,
+            call_kind="json",
         )
         return self._extract_json(raw_text)
 
@@ -167,13 +204,54 @@ class GeminiClient:
         include_thoughts: bool,
         *,
         cached: bool,
+        call_kind: str,
+        duration_ms: int,
+        status: str,
+        error: str = "",
     ) -> None:
         self._log.append(
             {
                 "model_id": model_id,
+                "call_kind": call_kind,
+                "prompt_stage": self._infer_prompt_stage(prompt),
                 "include_thoughts": include_thoughts,
                 "cached": cached,
+                "status": status,
+                "duration_ms": duration_ms,
+                "prompt_chars": len(prompt),
+                "response_chars": len(response_text),
+                "prompt_preview": self._preview_text(prompt),
+                "response_preview": self._preview_text(response_text),
+                "error": error,
                 "prompt": prompt,
                 "response_text": response_text,
             }
         )
+
+    @staticmethod
+    def _preview_text(text: str, limit: int = 220) -> str:
+        compact = " ".join(text.split())
+        return compact[:limit]
+
+    @staticmethod
+    def _infer_prompt_stage(prompt: str) -> str:
+        stage_markers = [
+            ("question-understanding stage", "understand_question"),
+            ("planning stage", "plan"),
+            ("action selector", "choose_next_action"),
+            ("sufficiency checker", "check_sufficiency"),
+            ("Generate one read-only SQLite query", "build_query_data_input"),
+            ("Generate the input for the tool `search_docs`", "build_search_docs_input"),
+            ("Generate the input for the tool `web_search`", "build_web_search_input"),
+            ("Generate the input for the tool `query_data`", "build_query_data_tool_input"),
+            ("final answer composer", "compose_answer"),
+            ("without calling tools", "direct_answer"),
+            ("Repair or tighten the tool input", "reformulate_tool_input"),
+        ]
+        lowered = prompt.lower()
+        for marker, stage in stage_markers:
+            if marker.lower() in lowered:
+                return stage
+        if "generate the input for the tool `" in lowered:
+            return "build_tool_input"
+        return "unknown"
