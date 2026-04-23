@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
   "backend": "faiss",
-  "vector_dim": 1024,
-  "embedding_hash": "blake2b-token-hash-v1",
+  "vector_dim": 384,
+  "embedding_hash": "sentence-transformers:sentence-transformers/all-MiniLM-L6-v2",
   "chunks": [
     {
       "chunk_id": "infosys-ar-25-p1-c1",

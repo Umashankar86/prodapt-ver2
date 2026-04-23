@@ -58,6 +58,7 @@ AGENTIC_RAG_STRUCTURED_DIR=data/structured
 AGENTIC_RAG_DOC_INDEX=artifacts/docs_index.json
 AGENTIC_RAG_SQLITE_DB=artifacts/structured.db
 AGENTIC_RAG_ENABLE_LLM_CACHE=false
+AGENTIC_RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ```
 
 `pypdf` is included in `requirements.txt`. If `pdftotext` is installed on the machine, the document loader will prefer it for PDF extraction.
@@ -136,7 +137,7 @@ The final output includes the normalized question, plan summary, final answer, c
 - `query_data` is for known structured facts in CSV-backed SQLite tables.
 - `web_search` is a fallback for recent, external, or locally missing information.
 - The routing loop prefers local evidence when metadata indicates a relevant local document exists.
-- Weighted document queries emphasize specific metric/topic terms while keeping generic intent words lighter to reduce noisy retrieval.
+- Document and page retrieval use learned SentenceTransformers embeddings, then hybrid ranking emphasizes exact metric/topic terms while keeping generic intent words lighter to reduce noisy retrieval.
 
 ## Tests
 

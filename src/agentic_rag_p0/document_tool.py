@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import math
+import os
 import re
 import subprocess
 from collections import Counter
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -52,8 +53,8 @@ BOILERPLATE_HINTS = [
 ]
 EXPLANATION_QUERY_TERMS = {"reason", "why", "explain", "driver", "drivers", "factor", "factors", "influence", "influenced", "cause", "caused", "drove", "drive"}
 FILENAME_NOISE_TOKENS = STOPWORDS | {"pdf", "txt", "md", "doc", "docx", "page", "pages", "part", "section", "chapter", "appendix", "final", "draft", "copy", "v1", "v2", "v3"}
-VECTOR_DIM = 1024
-EMBEDDING_HASH_ID = "blake2b-token-hash-v1"
+EMBEDDING_MODEL_NAME = os.environ.get("AGENTIC_RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+EMBEDDING_HASH_ID = f"sentence-transformers:{EMBEDDING_MODEL_NAME}"
 SECTION_HINTS = {
     "explanatory_text": ["overview", "summary", "background", "analysis", "discussion", "findings", "key points"],
     "tabular_reference": ["table", "figure", "appendix", "references", "glossary", "index"],
@@ -92,24 +93,43 @@ def _store_slug(filename: str) -> str:
     return slug or "document"
 
 
-def _hash_token(token: str) -> tuple[int, float]:
-    digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
-    signed_digest = hashlib.blake2b(f"{token}:sign".encode("utf-8"), digest_size=1).digest()
-    bucket = int.from_bytes(digest, "big") % VECTOR_DIM
-    sign = -1.0 if (signed_digest[0] % 2) else 1.0
-    return bucket, sign
+@lru_cache(maxsize=1)
+def _embedding_model():
+    try:
+        from sentence_transformers import SentenceTransformer  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "sentence-transformers is required for learned document embeddings. "
+            "Install dependencies with `pip install -r requirements.txt`."
+        ) from exc
+    return SentenceTransformer(EMBEDDING_MODEL_NAME)
+
+
+@lru_cache(maxsize=1)
+def _embedding_dim() -> int:
+    dim = _embedding_model().get_sentence_embedding_dimension()
+    if not dim:
+        raise RuntimeError(f"Could not determine embedding dimension for {EMBEDDING_MODEL_NAME}")
+    return int(dim)
+
+
+def _embed_texts(texts: list[str]) -> np.ndarray:
+    if not texts:
+        return np.zeros((0, _embedding_dim()), dtype="float32")
+    vectors = _embedding_model().encode(
+        [text or " " for text in texts],
+        normalize_embeddings=True,
+        convert_to_numpy=True,
+        show_progress_bar=False,
+    )
+    array = np.asarray(vectors, dtype="float32")
+    if array.ndim == 1:
+        array = np.expand_dims(array, axis=0)
+    return array
 
 
 def _embed_text(text: str) -> np.ndarray:
-    vector = np.zeros(VECTOR_DIM, dtype="float32")
-    counts = Counter(token for token in _tokenize(text) if token not in STOPWORDS)
-    for token, count in counts.items():
-        bucket, sign = _hash_token(token)
-        vector[bucket] += float(count) * sign
-    norm = float(np.linalg.norm(vector))
-    if norm > 0:
-        vector /= norm
-    return vector
+    return _embed_texts([text])[0]
 
 
 def _load_faiss():
@@ -362,7 +382,7 @@ def _build_metadata_payload(chunks: list[DocChunk], backend: str, index_path: Pa
         "version": 2,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "backend": backend,
-        "embedding_dim": VECTOR_DIM,
+        "embedding_dim": _embedding_dim(),
         "embedding_hash": EMBEDDING_HASH_ID,
         "stats": {
             "document_count": len(documents),
@@ -482,11 +502,12 @@ def _read_document_pages(path: Path) -> list[tuple[int | None, str]]:
 
 
 def _write_store_payload(store_index_path: Path, chunks: list[DocChunk]) -> None:
-    vectors = np.vstack([_embed_text(chunk.content) for chunk in chunks]).astype("float32") if chunks else np.zeros((0, VECTOR_DIM), dtype="float32")
+    vectors = _embed_texts([chunk.content for chunk in chunks])
+    vector_dim = int(vectors.shape[1]) if vectors.ndim == 2 else _embedding_dim()
     faiss = _load_faiss()
     backend = "faiss" if faiss is not None else "numpy"
     if chunks and faiss is not None:
-        index = faiss.IndexFlatIP(VECTOR_DIM)
+        index = faiss.IndexFlatIP(vector_dim)
         index.add(vectors)
         faiss.write_index(index, str(_index_file_path(store_index_path)))
     else:
@@ -494,7 +515,7 @@ def _write_store_payload(store_index_path: Path, chunks: list[DocChunk]) -> None
     store_payload = {
         "schema_version": 2,
         "backend": backend,
-        "vector_dim": VECTOR_DIM,
+        "vector_dim": vector_dim,
         "embedding_hash": EMBEDDING_HASH_ID,
         "chunks": [chunk.to_dict() for chunk in chunks],
     }
@@ -507,11 +528,12 @@ def _write_page_topic_store(
     pages: list[tuple[int | None, str]],
 ) -> None:
     profiles = _page_profile_texts(pages)
-    vectors = np.vstack([_embed_text(profile_text) for _, profile_text in profiles]).astype("float32") if profiles else np.zeros((0, VECTOR_DIM), dtype="float32")
+    vectors = _embed_texts([profile_text for _, profile_text in profiles])
+    vector_dim = int(vectors.shape[1]) if vectors.ndim == 2 else _embedding_dim()
     faiss = _load_faiss()
     backend = "faiss" if faiss is not None else "numpy"
     if profiles and faiss is not None:
-        index = faiss.IndexFlatIP(VECTOR_DIM)
+        index = faiss.IndexFlatIP(vector_dim)
         index.add(vectors)
         faiss.write_index(index, str(_index_file_path(page_store_path)))
     else:
@@ -519,7 +541,7 @@ def _write_page_topic_store(
     payload = {
         "schema_version": 2,
         "backend": backend,
-        "vector_dim": VECTOR_DIM,
+        "vector_dim": vector_dim,
         "embedding_hash": EMBEDDING_HASH_ID,
         "filename": filename,
         "pages": [
@@ -560,11 +582,12 @@ def build_doc_index(docs_dir: Path, index_path: Path) -> dict:
                 chunks_by_filename.setdefault(doc_path.name, []).append(chunk)
 
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    vectors = np.vstack([_embed_text(chunk.content) for chunk in chunks]).astype("float32") if chunks else np.zeros((0, VECTOR_DIM), dtype="float32")
+    vectors = _embed_texts([chunk.content for chunk in chunks])
+    vector_dim = int(vectors.shape[1]) if vectors.ndim == 2 else _embedding_dim()
     faiss = _load_faiss()
     backend = "faiss" if faiss is not None else "numpy"
     if chunks and faiss is not None:
-        index = faiss.IndexFlatIP(VECTOR_DIM)
+        index = faiss.IndexFlatIP(vector_dim)
         index.add(vectors)
         faiss.write_index(index, str(_index_file_path(index_path)))
     else:
@@ -596,7 +619,7 @@ def build_doc_index(docs_dir: Path, index_path: Path) -> dict:
     payload = {
         "schema_version": 2,
         "backend": backend,
-        "vector_dim": VECTOR_DIM,
+        "vector_dim": vector_dim,
         "embedding_hash": EMBEDDING_HASH_ID,
         "chunks": [chunk.to_dict() for chunk in chunks],
         "documents": metadata_payload["documents"],
@@ -893,7 +916,7 @@ def _retrieve_candidates(
 
     vector_path = _vector_file_path(index_path)
     if not vector_path.exists() or stored_embedding_hash != EMBEDDING_HASH_ID:
-        vectors = np.vstack([_embed_text(chunk.content) for chunk in chunks]).astype("float32")
+        vectors = _embed_texts([chunk.content for chunk in chunks])
         np.save(vector_path, vectors)
     else:
         vectors = np.load(vector_path)
