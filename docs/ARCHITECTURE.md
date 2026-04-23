@@ -5,118 +5,64 @@
 The system is organized around a lightweight orchestrator that decides when to use local documents, structured financial data, or live web search.
 
 ```mermaid
-flowchart LR
+flowchart TD
     User[User]
-    Env[.env and Settings]
+    Settings[.env and runtime settings]
 
-    subgraph CLI[CLI entrypoints]
-        Ask[ask]
-        SearchDocsCmd[search-docs]
-        QueryDataCmd[query-data]
-        WebSearchCmd[web-search]
-        BuildIndexCmd[build-doc-index and upgrade-doc-metadata]
-        BuildDbCmd[build-db]
+    subgraph BuildPhase[Offline build phase]
+        DocsInput[data/docs]
+        StructuredInput[data/structured]
+        BuildDocs[build-doc-index and upgrade-doc-metadata]
+        BuildDb[build-db]
+        DocArtifacts[docs_index.json metadata stores page_stores faiss or numpy vectors]
+        DbArtifact[structured.db]
     end
 
-    subgraph Inputs[Source data]
-        DocsDir[data/docs]
-        StructuredDir[data/structured]
-    end
-
-    subgraph DocArtifacts[Document retrieval artifacts]
-        GlobalDocIndex[artifacts/docs_index.json]
-        DocMetadata[artifacts/docs_index_metadata.json]
-        DocStores[artifacts/docs_index_stores]
-        PageStores[artifacts/docs_index_page_stores]
-        FaissOrNpy[FAISS indexes or NumPy vectors]
-    end
-
-    subgraph StructuredArtifacts[Structured data artifact]
-        SQLite[artifacts/structured.db]
-    end
-
-    subgraph Runtime[Agent runtime]
+    subgraph RuntimePhase[Question answering runtime]
+        CLI[CLI commands ask search-docs query-data web-search]
         Runner[AgentRunner]
         Service[AgentService]
-        State[AgentState with subgoals evidence and trace]
-        Prompts[Prompt builders]
-        Support[agent_support helpers]
         LLM[GeminiClient]
-        Cache[artifacts/llm_cache.json optional]
-        LlmLog[artifacts/llm_responses.json]
-        SearchDocsTool[search_docs]
-        QueryDataTool[query_data]
-        WebTool[web_search]
-        Tavily[Tavily Search API]
-        Result[AgentRunResult]
+        State[AgentState evidence subgoals trace]
+        SearchDocs[search_docs]
+        QueryData[query_data]
+        WebSearch[web_search]
+        Tavily[Tavily API]
+        Logs[llm_responses.json and optional llm_cache.json]
+        Result[final answer citations trace]
     end
 
-    subgraph Output[User-visible output]
-        FinalAnswer[Final answer]
-        Citations[Citations and citation map]
-        TraceOut[Trace evidence and subgoals]
-    end
+    DocsInput --> BuildDocs
+    BuildDocs --> DocArtifacts
+    StructuredInput --> BuildDb
+    BuildDb --> DbArtifact
 
-    User --> Ask
-    User --> SearchDocsCmd
-    User --> QueryDataCmd
-    User --> WebSearchCmd
-    Env --> Ask
-    Env --> SearchDocsCmd
-    Env --> QueryDataCmd
-    Env --> WebSearchCmd
-    Env --> BuildIndexCmd
-    Env --> BuildDbCmd
-
-    DocsDir --> BuildIndexCmd
-    BuildIndexCmd --> GlobalDocIndex
-    BuildIndexCmd --> DocMetadata
-    BuildIndexCmd --> DocStores
-    BuildIndexCmd --> PageStores
-    BuildIndexCmd --> FaissOrNpy
-
-    StructuredDir --> BuildDbCmd
-    BuildDbCmd --> SQLite
-
-    Ask --> Runner
+    User --> CLI
+    Settings --> CLI
+    Settings --> Service
+    CLI --> Runner
     Runner --> Service
-    Service --> State
-    Service --> Prompts
-    Service --> Support
+
     Service --> LLM
-    LLM --> Cache
-    LLM --> LlmLog
+    Service --> State
+    LLM --> Logs
 
-    Service --> SearchDocsTool
-    Service --> QueryDataTool
-    Service --> WebTool
+    Service --> SearchDocs
+    Service --> QueryData
+    Service --> WebSearch
 
-    SearchDocsTool --> GlobalDocIndex
-    SearchDocsTool --> DocMetadata
-    SearchDocsTool --> DocStores
-    SearchDocsTool --> PageStores
-    SearchDocsTool --> FaissOrNpy
-    QueryDataTool --> SQLite
-    WebTool --> Tavily
-
-    SearchDocsCmd --> SearchDocsTool
-    QueryDataCmd --> QueryDataTool
-    WebSearchCmd --> WebTool
+    SearchDocs --> DocArtifacts
+    QueryData --> DbArtifact
+    WebSearch --> Tavily
 
     Service --> Result
-    Result --> FinalAnswer
-    Result --> Citations
-    Result --> TraceOut
-    FinalAnswer --> User
-    Citations --> User
-    TraceOut --> User
+    Result --> User
 ```
 
 ## Runtime Sequence
 
 ```mermaid
 sequenceDiagram
-    autonumber
     participant User
     participant CLI
     participant Runner as AgentRunner
@@ -155,11 +101,10 @@ sequenceDiagram
             Web->>Tavily: request results
             Tavily-->>Web: ranked snippets
             Web-->>Agent: snippets + URLs + dates
-        else stop
-            break
+        else answer or refuse
+            LLM-->>Agent: stop tool loop
         end
 
-        Note over Agent: Store evidence, update trace, refresh subgoals
         Agent->>LLM: check_sufficiency
         LLM-->>Agent: continue or stop
     end
