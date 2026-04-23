@@ -1,160 +1,160 @@
 # Agentic RAG P0
 
-This repository now covers a solid P0, the core P1 loop, and key P2 quality features for the CIT Agentic RAG assignment. It gives you three standalone tools and a Gemini-driven agent runner that can choose tools, gather evidence, retry when needed, and return a traced answer.
+Agentic RAG P0 is a small Python retrieval system that combines local document search, structured SQL lookup, and web search behind an LLM-driven planning loop. It is built to answer questions with a visible trail: planned subgoals, tool calls, evidence, citations, and the final response.
 
-- `search_docs`: lexical search over local documents with filename and page citations
-- `query_data`: read-only SQL over CSV-backed SQLite tables
-- `web_search`: live web search through Tavily with normalized output
-- `ask`: natural-language question entrypoint backed by Vertex AI Gemini
+The system is intentionally simple to run and inspect. The core agent lives in `src/agentic_rag_p0`, local corpora live under `data/`, and generated indexes, logs, and caches live under `artifacts/`.
 
-## What this P0 includes
+## What It Does
 
-- Pure Python CLI for indexing and tool testing
-- Vertex Gemini orchestration for question understanding, planning, routing, and answer composition
-- Document chunking with source metadata
-- CSV-to-SQLite loader for structured data
-- Read-only SQL guardrails
-- LLM prompt caching
-- Retry and reformulation for failed tool calls
-- Evidence ledger with confidence and source mapping
-- Consistent JSON outputs for all three tools
-- Trace output with plan, steps, subgoals, evidence, and citations
-- Repo hygiene files for a clean handoff into P1
+- Searches local PDFs and text files with page and filename citations.
+- Loads CSV files into SQLite and exposes read-only SQL querying.
+- Uses Tavily for web search when local evidence is missing or stale.
+- Uses Gemini through Vertex AI for question understanding, planning, routing, sufficiency checks, and answer composition.
+- Records each run as structured JSON, including trace steps, evidence items, subgoal status, and citation mapping.
+- Caps each agent run at 8 tool calls to keep execution bounded.
 
-## Expected project layout
+## Project Layout
 
 ```text
 data/
-  docs/
-    report_1.pdf
-    notes.txt
-  structured/
-    financials.csv
-    company_metadata.csv
+  docs/                 # Local PDFs and text documents
+  structured/           # CSV files loaded into SQLite
 artifacts/
-src/
+  docs_index.json       # Built document index
+  structured.db         # Built SQLite database
+  llm_responses.json    # Run logs
+  llm_cache.json        # Optional LLM cache
+src/agentic_rag_p0/
+  agent_service.py      # Main agent loop
+  prompt_builders.py    # LLM prompts
+  document_tool.py      # Local document indexing/search
+  data_tool.py          # SQLite build/query tool
+  web_tool.py           # Tavily web search wrapper
+  cli.py                # Command line entrypoint
+tests/
 ```
 
 ## Setup
+
+Create a virtual environment and install dependencies:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
 ```
 
-`pypdf` is optional if your machine already has `pdftotext`. The code prefers `pdftotext` for PDF extraction and falls back to `pypdf` when available.
-
-Fill in Vertex and Tavily values in `.env`:
+Create a `.env` file in the repo root:
 
 ```env
-VERTEX_PROJECT_ID=project-1f82cdb3-be94-4df0-acd
+VERTEX_PROJECT_ID=your-project-id
 VERTEX_LOCATION=us-central1
 GEMINI_FAST_MODEL=gemini-2.5-flash
 GEMINI_PRO_MODEL=gemini-2.5-pro
-TAVILY_API_KEY=your_key_here
+TAVILY_API_KEY=your-tavily-key
+
+AGENTIC_RAG_DOCS_DIR=data/docs
+AGENTIC_RAG_STRUCTURED_DIR=data/structured
+AGENTIC_RAG_DOC_INDEX=artifacts/docs_index.json
+AGENTIC_RAG_SQLITE_DB=artifacts/structured.db
+AGENTIC_RAG_ENABLE_LLM_CACHE=false
 ```
 
-## Build the document index
+`pypdf` is included in `requirements.txt`. If `pdftotext` is installed on the machine, the document loader will prefer it for PDF extraction.
+
+## Build Indexes
+
+Build the local document index:
 
 ```bash
 PYTHONPATH=src python3 -m agentic_rag_p0.cli build-doc-index
 ```
 
-Override paths if needed:
-
-```bash
-PYTHONPATH=src python3 -m agentic_rag_p0.cli build-doc-index \
-  --docs-dir /absolute/path/to/docs \
-  --index-path /absolute/path/to/docs_index.json
-```
-
-## Build the structured database
+Build the structured SQLite database from CSV files:
 
 ```bash
 PYTHONPATH=src python3 -m agentic_rag_p0.cli build-db
 ```
 
-## Test each tool
+Inspect the database schema:
 
 ```bash
-PYTHONPATH=src python3 -m agentic_rag_p0.cli search-docs "operating margin FY24"
-PYTHONPATH=src python3 -m agentic_rag_p0.cli query-data "SELECT company, revenue FROM financials LIMIT 5"
 PYTHONPATH=src python3 -m agentic_rag_p0.cli db-schema
-PYTHONPATH=src python3 -m agentic_rag_p0.cli web-search "Infosys stock price"
 ```
 
-## Run the P1 agent
+## Run The Agent
+
+Ask a question and return the full JSON trace plus a readable final answer:
 
 ```bash
-PYTHONPATH=src python3 -m agentic_rag_p0.cli ask "How did Infosys operating margin compare with TCS in FY24, and what reason did each company give?"
+PYTHONPATH=src python3 -m agentic_rag_p0.cli ask "How did Infosys' and TCS' operating margins compare in FY25, and what drove each?"
 ```
 
-The `ask` command returns structured JSON with:
+Return only the plan, tools called, and final answer:
 
-- normalized question
-- plan summary
-- final answer
-- citations
-- steps used
-- trace entries
-- subgoals
-- evidence pool
-- citation map
+```bash
+PYTHONPATH=src python3 -m agentic_rag_p0.cli ask "How did Infosys' and TCS' operating margins compare in FY25, and what drove each?" --answer-only
+```
 
-## Tool contracts
+## Use Tools Directly
 
-### `search_docs`
+Search local documents:
 
-- Input: natural-language query string
-- Output: top chunks with `content`, `filename`, `page_number`, `chunk_id`, `score`
-- Responsibility: search only the local unstructured corpus
+```bash
+PYTHONPATH=src python3 -m agentic_rag_p0.cli search-docs "TCS operating margin FY2025 utilization productivity realization"
+```
 
-### `query_data`
+Query structured data:
 
-- Input: read-only SQL query
-- Output: `columns`, `rows`, `row_count`
-- Responsibility: answer only from structured CSV-backed SQLite tables
+```bash
+PYTHONPATH=src python3 -m agentic_rag_p0.cli query-data "SELECT company, fiscal_year, operating_margin_pct FROM public_company_financials_india_it_4yr WHERE fiscal_year = 'FY2025'"
+```
 
-### `web_search`
+Search the web:
 
-- Input: short search string under 10 words
-- Output: top results with `title`, `snippet`, `url`, `published_date`
-- Responsibility: fetch only recent external information
+```bash
+PYTHONPATH=src python3 -m agentic_rag_p0.cli web-search "Infosys FY2025 operating margin"
+```
 
-## P1 flow
+## Agent Flow
 
-The P1 loop is implemented in plain Python and keeps the control flow readable:
+The agent follows a compact loop:
 
-1. Question understanding
-2. Planning and subgoal creation
-3. Next-action selection
-4. Tool execution
-5. Evidence recording
-6. Sufficiency check
-7. Final answer or refusal
+1. Normalize and classify the question.
+2. Build a plan and subgoals.
+3. Choose the next tool.
+4. Generate tool input.
+5. Run the tool and store evidence.
+6. Check whether evidence is sufficient.
+7. Continue, answer, or refuse.
 
-The loop enforces a hard cap of 8 tool calls.
+The final output includes the normalized question, plan summary, final answer, citations, citation map, trace, subgoals, evidence, tool count, and status.
 
-## P2 upgrades
+## Retrieval Notes
 
-- Evidence items carry normalized claims, confidence, raw result snapshots, and subgoal links.
-- Final answers use evidence IDs to derive exact citations.
-- Failed tool calls trigger one reformulation/retry path before the run gives up.
-- LLM generations are cached to `artifacts/llm_cache.json`.
-- Structured queries are single-statement, read-only, and truncated to 200 rows.
+- `search_docs` is for the local unstructured corpus and can target specific document files.
+- `query_data` is for known structured facts in CSV-backed SQLite tables.
+- `web_search` is a fallback for recent, external, or locally missing information.
+- The routing loop prefers local evidence when metadata indicates a relevant local document exists.
+- Weighted document queries emphasize specific metric/topic terms while keeping generic intent words lighter to reduce noisy retrieval.
 
 ## Tests
+
+Run the full test suite:
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-## Notes
+Run a focused test file:
 
-- `query_data` intentionally blocks non-read-only SQL.
-- `web_search` uses Tavily when `TAVILY_API_KEY` is set.
-- The P1 agent uses Vertex AI Gemini through `google-genai`.
-- If you want better semantic retrieval later, you can swap the document scorer without changing the CLI contract.
-# prodapt-ver2
+```bash
+PYTHONPATH=src python3 -m unittest tests.test_doc_loop_guard -v
+```
+
+## Development Notes
+
+- Generated artifacts can change during local runs; review them before committing.
+- SQL execution is restricted to read-only statements.
+- LLM response caching is optional and controlled by `AGENTIC_RAG_ENABLE_LLM_CACHE`.
+- The CLI uses `PYTHONPATH=src` because this repo is a lightweight source tree rather than a packaged install.

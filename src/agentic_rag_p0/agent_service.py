@@ -135,7 +135,7 @@ class AgentService:
         stem_tokens = {
             token
             for token in re.split(r"[^a-z0-9]+", filename.lower())
-            if len(token) > 1 and token not in {"pdf", "txt", "md", "ar", "annual", "report"}
+            if len(token) > 1 and not token.isdigit() and token not in {"pdf", "txt", "md", "ar", "annual", "report"}
         }
         return {subject_hint, *stem_tokens} - {""}
     def _targeted_search_query(self, raw_query: str, s: AgentState, filters: list[str], document_catalog: list[dict], routing_text: str = "") -> str:
@@ -164,7 +164,7 @@ class AgentService:
         if not isinstance(weighted_terms, dict):
             return raw_query
         parts: list[str] = []
-        weights = {"must_have": 4, "should_have": 2, "context": 1}
+        weights = {"must_have": 2, "should_have": 1, "context": 1}
         for key, repeat in weights.items():
             terms = weighted_terms.get(key, [])
             if not isinstance(terms, list):
@@ -177,6 +177,33 @@ class AgentService:
             parts.append(raw_query.strip())
         weighted_query = " ".join(parts).strip()
         return weighted_query or raw_query
+    def _unsearched_local_doc_target(self, s: AgentState, routing_text: str = "") -> tuple[list[str], str]:
+        try:
+            document_catalog = get_doc_index_metadata(self.settings.doc_index_path).get("documents", [])
+        except Exception:
+            return [], ""
+        if not isinstance(document_catalog, list):
+            return [], ""
+        filters, target_text = self._document_filter_for_active_subgoal(s, document_catalog, routing_text)
+        if len(filters) != 1:
+            return [], ""
+        attempt_counts = self._search_doc_attempt_counts(s)
+        if attempt_counts.get(filters[0].lower(), 0) > 0:
+            return [], ""
+        return filters, target_text
+    def _guard_web_fallback(self, s: AgentState, decision: dict) -> dict:
+        if decision.get("action") != "web_search" or not self._open(s):
+            return decision
+        filters, target_text = self._unsearched_local_doc_target(s, str(decision.get("rationale", "")))
+        if not filters:
+            return decision
+        filename = filters[0]
+        target = target_text or self._label(s)
+        return {
+            "action": "search_docs",
+            "rationale": f"Trying unsearched local document {filename} for {target} before web fallback.",
+            "refusal_reason": "",
+        }
     def build_tool_input(self, s: AgentState, a: str, action_rationale: str = "") -> object:
         if a == "query_data": return self.llm.generate_json(build_query_data_input_prompt(s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence[-3:]], get_db_schema(self.settings.sqlite_db_path), get_db_metadata(self.settings.sqlite_db_path, sample_rows=3)), model_id=self.settings.gemini_fast_model)["tool_input"]
         document_catalog = get_doc_index_metadata(self.settings.doc_index_path).get("documents", []) if a == "search_docs" else None
@@ -277,6 +304,7 @@ class AgentService:
         if u.get("mode") == "no_tool": s.status, s.final_answer = "answered", self.compose_answer(s, direct_answer=True); return self.finalize(s)
         while s.steps_used < self.max_tool_calls:
             d = {"action": s.forced_next_action, "rationale": s.forced_next_rationale, "refusal_reason": ""} if s.forced_next_action else self.choose_next_action(s); s.forced_next_action, s.forced_next_rationale = "", ""; a, r = d.get("action", "answer"), d.get("rationale", "")
+            d = self._guard_web_fallback(s, d); a, r = d.get("action", "answer"), d.get("rationale", "")
             if a in {"answer", "refuse"}: s.status = "answered" if a == "answer" else "refused"; s.final_answer = s.final_answer or d.get("refusal_reason", "Insufficient evidence to answer safely."); break
             try: summary = self.run_tool_with_retry(s, a, r)
             except Exception: 

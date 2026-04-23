@@ -6,8 +6,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agentic_rag_p0.agent import AgentRunner
+from agentic_rag_p0.agent_service import AgentService
 from agentic_rag_p0.config import Settings
 from agentic_rag_p0.document_tool import build_doc_index
+from agentic_rag_p0.models import EvidenceItem, Subgoal
 
 
 class RepeatingDocLLM:
@@ -124,6 +126,94 @@ class WebFirstOnLowCoverageLLM:
 
 
 class CoverageRoutingTests(unittest.TestCase):
+    def test_web_fallback_searches_untried_matching_local_doc_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_dir = root / "docs"
+            docs_dir.mkdir()
+            (docs_dir / "infosys-ar-25.pdf.txt").write_text(
+                "Infosys operating margin improved due to utilization and automation.",
+                encoding="utf-8",
+            )
+            (docs_dir / "tcs.pdf.txt").write_text(
+                "TCS operating margin was affected by wage hikes and utilization.",
+                encoding="utf-8",
+            )
+            index_path = root / "artifacts" / "docs_index.json"
+            build_doc_index(docs_dir, index_path)
+            settings = Settings(
+                docs_dir=docs_dir,
+                structured_dir=root / "structured",
+                doc_index_path=index_path,
+                sqlite_db_path=root / "artifacts" / "structured.db",
+                llm_cache_path=root / "artifacts" / "llm_cache.json",
+                llm_log_path=root / "artifacts" / "llm_responses.json",
+                tavily_api_key="test-key",
+                vertex_project_id="test-project",
+                vertex_location="us-central1",
+                gemini_fast_model="fake-fast",
+                gemini_pro_model="fake-pro",
+                continuity_enabled=False,
+            )
+            service = AgentService(settings, llm_client=RedirectToWebLLM())
+            state = service.initialize_state("Compare Infosys and TCS FY25 margin drivers.")
+            state.normalized_question = state.question
+            state.subgoals = [
+                Subgoal(description="Find Infosys FY25 operating margin drivers.", status="partial", notes=""),
+                Subgoal(description="Find TCS FY25 operating margin drivers.", status="pending", notes=""),
+            ]
+            state.evidence = [
+                EvidenceItem(
+                    evidence_id="search_docs-1-1",
+                    source_tool="search_docs",
+                    source_reference="infosys-ar-25.pdf p.1",
+                    summary="Infosys margin commentary.",
+                    related_subgoal="Find Infosys FY25 operating margin drivers.",
+                    tool_input='{"document_filters": ["infosys-ar-25.pdf.txt"]}',
+                )
+            ]
+            document_catalog = service._meta()["documents"]["documents"]
+            self.assertEqual(
+                service._document_filters_for_text(
+                    "Find TCS FY25 operating margin drivers.",
+                    document_catalog,
+                ),
+                ["tcs.pdf.txt"],
+            )
+
+            decision = service._guard_web_fallback(
+                state,
+                {
+                    "action": "web_search",
+                    "rationale": "Infosys and TCS driver evidence is still weak.",
+                    "refusal_reason": "",
+                },
+            )
+
+            self.assertEqual(decision["action"], "search_docs")
+            self.assertIn("tcs.pdf", decision["rationale"])
+            state.evidence.append(
+                EvidenceItem(
+                    evidence_id="search_docs-2-1",
+                    source_tool="search_docs",
+                    source_reference="tcs.pdf.txt p.1",
+                    summary="TCS margin commentary.",
+                    related_subgoal="Find TCS FY25 operating margin drivers.",
+                    tool_input='{"document_filters": ["tcs.pdf.txt"]}',
+                )
+            )
+
+            allowed_decision = service._guard_web_fallback(
+                state,
+                {
+                    "action": "web_search",
+                    "rationale": "TCS driver evidence is still weak.",
+                    "refusal_reason": "",
+                },
+            )
+
+            self.assertEqual(allowed_decision["action"], "web_search")
+
     def test_low_local_coverage_goes_web_first(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
