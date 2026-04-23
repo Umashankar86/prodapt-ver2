@@ -2,62 +2,63 @@
 
 ## System Overview
 
-The system is organized around a lightweight orchestrator that decides when to use local documents, structured financial data, or live web search.
+The system has two halves:
+
+- an offline preparation flow that turns raw PDFs and CSV files into local retrieval artifacts
+- a runtime agent flow that decides when to use document search, SQL lookup, or live web search for each question
 
 ```mermaid
-flowchart TD
-    User[User]
-    Settings[.env and runtime settings]
-
-    subgraph BuildPhase[Offline build phase]
+flowchart LR
+    subgraph Prep[Offline Preparation]
+        direction TB
         DocsInput[data/docs]
         StructuredInput[data/structured]
-        BuildDocs[build-doc-index and upgrade-doc-metadata]
+        BuildDocs[build-doc-index<br/>upgrade-doc-metadata]
         BuildDb[build-db]
-        DocArtifacts[docs_index.json metadata stores page_stores faiss or numpy vectors]
-        DbArtifact[structured.db]
+        DocArtifacts[Document artifacts<br/>docs_index.json<br/>docs_index_metadata.json<br/>per-document stores<br/>page-topic stores]
+        DbArtifact[SQLite database<br/>artifacts/structured.db]
+
+        DocsInput --> BuildDocs --> DocArtifacts
+        StructuredInput --> BuildDb --> DbArtifact
     end
 
-    subgraph RuntimePhase[Question answering runtime]
-        CLI[CLI commands ask search-docs query-data web-search]
+    subgraph Runtime[Runtime Question Answering]
+        direction TB
+        User[User]
+        CLI[CLI entrypoints<br/>ask search-docs query-data web-search]
         Runner[AgentRunner]
         Service[AgentService]
+        State[AgentState<br/>subgoals evidence trace]
         LLM[GeminiClient]
-        State[AgentState evidence subgoals trace]
         SearchDocs[search_docs]
         QueryData[query_data]
         WebSearch[web_search]
         Tavily[Tavily API]
-        Logs[llm_responses.json and optional llm_cache.json]
-        Result[final answer citations trace]
+        Logs[Observability<br/>llm_responses.json<br/>optional llm_cache.json]
+        Output[Final answer<br/>citations<br/>trace]
+
+        User --> CLI --> Runner --> Service
+        Service --> State
+        Service --> LLM --> Logs
+        Service --> SearchDocs
+        Service --> QueryData
+        Service --> WebSearch
+        WebSearch --> Tavily
+        Service --> Output --> User
     end
-
-    DocsInput --> BuildDocs
-    BuildDocs --> DocArtifacts
-    StructuredInput --> BuildDb
-    BuildDb --> DbArtifact
-
-    User --> CLI
-    Settings --> CLI
-    Settings --> Service
-    CLI --> Runner
-    Runner --> Service
-
-    Service --> LLM
-    Service --> State
-    LLM --> Logs
-
-    Service --> SearchDocs
-    Service --> QueryData
-    Service --> WebSearch
 
     SearchDocs --> DocArtifacts
     QueryData --> DbArtifact
-    WebSearch --> Tavily
-
-    Service --> Result
-    Result --> User
 ```
+
+### What The Diagram Shows
+
+- `build-doc-index` converts the raw annual-report corpus into one global manifest plus per-document chunk stores and page-topic stores for retrieval.
+- `build-db` loads the structured CSV data into SQLite so the agent can issue read-only SQL queries.
+- At runtime, the CLI hands the user question to `AgentRunner`, which delegates the full loop to `AgentService`.
+- `AgentService` is the orchestrator: it tracks subgoals, evidence, trace state, calls the LLM for planning/routing/composition, and invokes the three tools.
+- `search_docs` reads from the built document artifacts, `query_data` reads from SQLite, and `web_search` calls Tavily for recent information.
+- Every run produces a final answer plus citations and trace output, while LLM calls are logged to `artifacts/llm_responses.json` and can optionally use `artifacts/llm_cache.json`.
 
 ## Runtime Sequence
 
