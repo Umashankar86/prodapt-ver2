@@ -53,8 +53,8 @@ Planning rules:
 - in case the question has anything related to current or future data or explicitly mentions that it needs current or future data prefer web search this is important when the words current is given dont plan to searh locally but use the web plan to search the we 
 - Distinguish between:
   - valid domain questions answerable by web_search even if they are not in local docs/data, such as recent company, sector, stock-market, or business developments
-  - unrelated general-knowledge, trivia, joke, riddle, or creative requests that are outside the system's business/company/financial scope
-- If the question is outside the supported business/company/financial scope of all available tools, do not make a normal answer plan.
+  - unrelated general-knowledge, trivia, joke, riddle, or creative even prdicting stocks  requests that are outside the system's scope
+- If the question is outside the supported business/company/financial\ scope of all available tools, do not make a normal answer plan.
 - For such out-of-scope questions, return an out-of-scope plan:
   - `plan_summary` should clearly say the question is outside supported scope
   - `answer_requirements` should be []
