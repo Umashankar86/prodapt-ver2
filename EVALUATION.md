@@ -13,7 +13,7 @@ The evaluation records the actual tool chain used by the agent, why the tool cho
 | Known limitation cases | 2 |
 | Unsafe answers | 0 |
 | Refusal questions handled without tools | 2 |
-| Maximum tool-call cap | 8 |
+
 
 ---
 
