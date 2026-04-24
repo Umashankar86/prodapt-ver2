@@ -1,6 +1,6 @@
-# Agentic RAG P0
+# Agentic System P0
 
-Agentic RAG P0 is a small Python retrieval system that combines local document search, structured SQL lookup, and web search behind an LLM-driven planning loop. It is built to answer questions with a visible trail: planned subgoals, tool calls, evidence, citations, and the final response.
+Agentic  P0 is a small Python retrieval system that combines local document search, structured SQL lookup, and web search behind an LLM-driven planning loop. It is built to answer questions with a visible trail: planned subgoals, tool calls, evidence, citations, and the final response.
 
 The system is intentionally simple to run and inspect. The core agent lives in `src/agentic_rag_p0`, local corpora live under `data/`, and generated indexes, logs, and caches live under `artifacts/`.
 
