@@ -437,6 +437,12 @@ For explanation/commentary questions, prefer a single internally consistent conc
   1. the question explicitly asks about documents or a document, and
   2. every evidence item you rely on comes only from search_docs.
 - If web_search or query_data evidence is present or used, never frame the answer as a document-only failure. Say instead that the available evidence does not directly show, confirm, or explain the requested point.
+- Output format is strict. Your response must be exactly one JSON object and nothing else.
+- The first character of your response must be `{{` and the last character must be `}}`.
+- Do not use markdown fences.
+- Do not add any prose before or after the JSON.
+- Do not add labels like "Answer:" or "JSON:".
+- If you are about to write a normal paragraph, stop and convert it into the required JSON object instead.
 Return JSON only:
 {{
   "answer": "string",
@@ -466,7 +472,12 @@ First judge whether the evidence is good enough to answer the user's actual ques
 - If the evidence is weak, mostly unrelated, or less than about half relevant to the question, set outcome="refuse" and explain that the tool-call limit was reached before enough relevant evidence was gathered.
 - Do not say the tool limit was reached when outcome is "answer" or "partial".
 - Prefer careful language such as "the available evidence suggests" when the evidence supports an inference but is not a direct company explanation.
-
+- Output format is strict. Your response must be exactly one JSON object and nothing else.
+- The first character of your response must be `{{` and the last character must be `}}`.
+- Do not use markdown fences.
+- Do not add any prose before or after the JSON.
+- Do not add labels like "Answer:" or "JSON:".
+- If you are about to write a normal paragraph, stop and convert it into the required JSON object instead.
 Return JSON only:
 {{
   "outcome": "answer|partial|refuse",

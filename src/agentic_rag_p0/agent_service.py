@@ -1,7 +1,7 @@
 import json
 import re
 from .agent_state import AgentState
-from .agent_support import confidence_from_score, extract_table_references_from_sql, has_usable_web_evidence, is_simple_structured_question, local_docs_cover_question, needs_commentary, normalize_claim, state_snapshot, summarize_tool_result
+from .agent_support import confidence_from_score, extract_table_references_from_sql, has_usable_web_evidence, normalize_claim, state_snapshot, summarize_tool_result
 from .config import Settings
 from .data_tool import get_db_metadata, get_db_schema, query_data
 from .document_tool import get_doc_index_metadata, search_docs
@@ -12,7 +12,7 @@ from .web_tool import web_search
 MAX_TOOL_CALLS = 8
 TOOL_DESCRIPTIONS = {"search_docs": "Use when the answer should come from the local unstructured corpus. Input must be a short natural-language retrieval query. Output is top chunks with filename and page citations.", "query_data": "Use when the answer depends on structured CSV-backed tables. Input must be a read-only SQL SELECT/WITH query over the SQLite database. Output is rows, columns, and row_count.", "web_search": "Use only for recent or external information not covered by local docs/data. Input must be under 10 words. Output is snippets with URL and publication date."}
 class AgentService:
-    max_tool_calls = MAX_TOOL_CALLS; tool_descriptions = TOOL_DESCRIPTIONS; initialize_state = staticmethod(lambda q: AgentState(question=q)); _is_simple_structured_question = staticmethod(is_simple_structured_question)
+    max_tool_calls = MAX_TOOL_CALLS; tool_descriptions = TOOL_DESCRIPTIONS; initialize_state = staticmethod(lambda q: AgentState(question=q))
     def __init__(self, settings: Settings, llm_client: GeminiClient | None = None) -> None: self.settings, self.llm = settings, llm_client or GeminiClient(settings)
     def _meta(self) -> dict[str, object]:
         try: structured = get_db_metadata(self.settings.sqlite_db_path, sample_rows=5)
@@ -28,10 +28,8 @@ class AgentService:
     def hydrate_plan(self, s: AgentState, p: dict) -> None:
         s.plan_summary, s.answer_requirements, s.likely_tools, s.risks = p.get("plan_summary", ""), p.get("answer_requirements", []), p.get("likely_tools", []), p.get("risks", [])
         s.subgoals = [Subgoal(**g) for g in p.get("subgoals", [])] or [Subgoal(description="Answer the user's question")]
-        if self._is_simple_structured_question(s.normalized_question) and set(s.likely_tools or ["query_data"]) <= {"query_data"} and len(s.subgoals) == 1 and not needs_commentary(s.normalized_question): s.subgoals = [Subgoal(description="Retrieve the needed value(s) from the structured dataset.", status="pending", notes="Single structured lookup should answer this question.")]
     def _open(self, s: AgentState) -> bool: return any(g.status != "done" for g in s.subgoals)
     def choose_next_action(self, s: AgentState) -> dict:
-        if needs_commentary(s.normalized_question) and not s.evidence and not local_docs_cover_question(s.normalized_question, self._meta()): return {"action": "web_search", "rationale": "The local corpus metadata does not show clear coverage for this commentary question, so switching to web search.", "refusal_reason": ""}
         if s.local_doc_attempted and s.web_fallback_used and self._open(s) and has_usable_web_evidence(s): return {"action": "answer", "rationale": "Local docs and one web fallback have already been attempted, so finalize using the best remaining grounded evidence.", "refusal_reason": ""}
         d = self.llm.generate_json(build_choose_next_action_prompt(s.normalized_question, s.plan_summary, s.likely_tools, [g.to_dict() for g in s.subgoals], [e.to_dict() for e in s.evidence[-5:]], self._meta(), s.steps_used, self.max_tool_calls), model_id=self.settings.gemini_fast_model)
         return d
@@ -282,16 +280,16 @@ class AgentService:
         by = {g.description: g for g in s.subgoals}
         for u in updates or []:
             if u.get("description") in by: by[u["description"]].status, by[u["description"]].notes = u.get("status", by[u["description"]].status), u.get("notes", by[u["description"]].notes)
-    def should_answer_early(self, s: AgentState) -> bool: return bool(s.evidence) and not (needs_commentary(s.normalized_question) and self._open(s)) and (all(g.status == "done" for g in s.subgoals) or (self._is_simple_structured_question(s.normalized_question) and any(e.source_tool == "query_data" and e.usable for e in s.evidence)))
+    def should_answer_early(self, s: AgentState) -> bool: return bool(s.evidence) and all(g.status == "done" for g in s.subgoals)
     def compose_answer(self, s: AgentState, *, direct_answer: bool) -> str:
         if direct_answer: return self.llm.generate_text(build_direct_answer_prompt(s.normalized_question), model_id=self.settings.gemini_fast_model)
-        composed = self.llm.generate_json(build_compose_answer_prompt(s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence if e.usable]), model_id=self.settings.gemini_pro_model); used = set(composed.get("used_evidence_ids", [])); s.citations = [e.source_reference for e in s.evidence if e.evidence_id in used] or sorted({e.source_reference for e in s.evidence if e.usable}); return self._append_structured_tables(composed.get("answer", ""), used, s.evidence)
+        composed = self.llm.generate_json(build_compose_answer_prompt(s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence if e.usable]), model_id=self.settings.gemini_fast_model); used = set(composed.get("used_evidence_ids", [])); s.citations = [e.source_reference for e in s.evidence if e.evidence_id in used] or sorted({e.source_reference for e in s.evidence if e.usable}); return self._append_structured_tables(composed.get("answer", ""), used, s.evidence)
     def finalize_after_cap(self, s: AgentState) -> None:
         usable = [e.to_dict() for e in s.evidence if e.usable]
         if not usable:
             s.status, s.final_answer = "refused", "Stopped after reaching the hard limit of 8 tool calls without enough usable evidence to answer."
             return
-        composed = self.llm.generate_json(build_cap_final_answer_prompt(s.normalized_question, s.plan_summary, [g.to_dict() for g in s.subgoals], usable), model_id=self.settings.gemini_pro_model)
+        composed = self.llm.generate_json(build_cap_final_answer_prompt(s.normalized_question, s.plan_summary, [g.to_dict() for g in s.subgoals], usable), model_id=self.settings.gemini_fast_model)
         outcome = str(composed.get("outcome", "refuse")).strip().lower()
         used = set(composed.get("used_evidence_ids", []))
         if outcome in {"answer", "partial"} and str(composed.get("answer", "")).strip():
