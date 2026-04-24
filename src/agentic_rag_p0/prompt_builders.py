@@ -50,11 +50,11 @@ Planning rules:
 - Use web_search only if the local structured/doc metadata does not appear sufficient or the question is explicitly recent/current.
 - Do not create extra subgoals once one local tool can answer the question.
 - If local docs are likely to contain only indirect or comparative commentary, keep the plan open for a later redirect(AS THE AGENT CAN REDIRECT IF U THINK THE DATA IS NOT ENOUGH TO WEB SEARCH) rather than assuming local evidence will be enough.
-- in case the question has anything related to current or future data or explicitly mentions that it needs current or future data prefer web search this is important when the words current is given dont plan to searh locally but use the web plan to search the we 
+- Important very Important : in case the question has anything related to current or future data or explicitly mentions that it needs current or future data prefer web search this is important when the words current is given dont plan to searh locally but use the web plan to search the we 
 - Distinguish between:
   - valid domain questions answerable by web_search even if they are not in local docs/data, such as recent company, sector, stock-market, or business developments
   - unrelated general-knowledge, trivia, joke, riddle, or creative even prdicting stocks  requests that are outside the system's scope
-- If the question is outside the supported business/company/financial\ scope of all available tools, do not make a normal answer plan.
+- If the question is outside the supported business/company/financial scope of all available tools, do not make a normal answer plan.
 - For such out-of-scope questions, return an out-of-scope plan:
   - `plan_summary` should clearly say the question is outside supported scope
   - `answer_requirements` should be []
@@ -467,11 +467,16 @@ You are finalizing an agentic RAG answer after the tool-call budget is exhausted
 Use only the usable evidence below. Do not invent facts.
 
 First judge whether the evidence is good enough to answer the user's actual question:
-- If the evidence answers the main question reasonably well, set outcome="answer" and answer normally. Do not mention tool limits.
-- If the evidence answers only part of the question, set outcome="partial" and answer the supported part carefully. Do not mention tool limits. Briefly say which requested part is not fully supported.
-- If the evidence is weak, mostly unrelated, or less than about half relevant to the question, set outcome="refuse" and explain that the tool-call limit was reached before enough relevant evidence was gathered.
+- Be very strict. Only choose outcome="answer" when the gathered evidence covers at least about 90% of what the user asked for and directly supports the main conclusion.
+- Treat "90% covered" as meaning nearly all required parts are grounded: the main entity, metric/topic, time period, comparison side, and the key explanation or claim if one was requested.
+- If the evidence answers only part of the question, leaves an important subgoal unsupported, relies on large inference, or feels below about 90% complete/relevant, set outcome="refuse".
+- Do not give a partial answer when the 90% threshold is not met.
+- If the evidence does not clearly cross the 90% threshold, refuse.
+- If the evidence is weak, mostly unrelated, indirect, repetitive, wrong-period, wrong-entity, or below about 90% relevant/sufficient for the full question, set outcome="refuse" and explain gently that the 8-tool-call limit was reached before enough relevant evidence was gathered.
+- When in doubt, prefer "refuse".
 - Do not say the tool limit was reached when outcome is "answer" or "partial".
 - Prefer careful language such as "the available evidence suggests" when the evidence supports an inference but is not a direct company explanation.
+- If outcome="refuse", say it in a calm, helpful way. Mention that 8 tool calls were reached and that the currently collected evidence is not strong enough to answer reliably.
 - Output format is strict. Your response must be exactly one JSON object and nothing else.
 - The first character of your response must be `{{` and the last character must be `}}`.
 - Do not use markdown fences.
@@ -480,7 +485,7 @@ First judge whether the evidence is good enough to answer the user's actual ques
 - If you are about to write a normal paragraph, stop and convert it into the required JSON object instead.
 Return JSON only:
 {{
-  "outcome": "answer|partial|refuse",
+  "outcome": "answer|refuse",
   "answer": "string",
   "used_evidence_ids": ["string"]
 }}

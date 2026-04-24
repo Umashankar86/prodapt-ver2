@@ -78,5 +78,25 @@
   {
     "question": "What strategic priorities did Infosys highlight in FY25 MD&A?",
     "expected_status": "answered"
+  },
+  {
+    "question": "Infosys revenue increased in FY2025, so why did its stock fall recently?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "Which company should I invest in right now?",
+    "expected_status": "refused"
+  },
+  {
+    "question": "Should I buy Infosys stock today or wait?",
+    "expected_status": "refused"
+  },
+  {
+    "question": "Which company performed the best in FY2025?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "What did TCS mention about AI strategy in FY2025 annual report?",
+    "expected_status": "answered"
   }
 ]

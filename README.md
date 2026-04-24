@@ -7,7 +7,14 @@ The system is intentionally simple to run and inspect. The core agent lives in `
 Supporting submission docs:
 
 - [DESIGN.md](DESIGN.md)
+- [EVALUATION.md](EVALUATION.md)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
+## Submission Artifacts
+
+- Design document: [DESIGN.md](DESIGN.md)
+- Evaluation report: [EVALUATION.md](EVALUATION.md)
+- Demo video: [Google Drive demo](https://drive.google.com/file/d/1udB1fpjJp7R6sWpCBp4VLkzQzBrxvTc8/view?usp=sharing)
 
 ## What It Does
 

@@ -292,7 +292,7 @@ class AgentService:
         composed = self.llm.generate_json(build_cap_final_answer_prompt(s.normalized_question, s.plan_summary, [g.to_dict() for g in s.subgoals], usable), model_id=self.settings.gemini_fast_model)
         outcome = str(composed.get("outcome", "refuse")).strip().lower()
         used = set(composed.get("used_evidence_ids", []))
-        if outcome in {"answer", "partial"} and str(composed.get("answer", "")).strip():
+        if outcome == "answer" and str(composed.get("answer", "")).strip():
             s.status = "answered"
             s.citations = [e.source_reference for e in s.evidence if e.evidence_id in used] or sorted({e.source_reference for e in s.evidence if e.usable})
             s.final_answer = self._append_structured_tables(str(composed.get("answer", "")), used, s.evidence)
