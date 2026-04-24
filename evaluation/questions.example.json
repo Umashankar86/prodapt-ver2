@@ -1,10 +1,18 @@
 [
   {
-    "question": "What was Infosys' operating margin in FY2025?",
+    "question": "What was Wipro's revenue growth over the last four years?",
     "expected_status": "answered"
   },
   {
-    "question": "How did Infosys' and TCS' operating margins compare in FY2025, and what drove each?",
+    "question": "What reason did TCS give for its margin decrement/change in FY25?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "How did Infosys' and TCS' operating margins compare in FY25, and what drove each?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "Compare headcount growth for Infosys, TCS, and Wipro over the last four fiscal years.",
     "expected_status": "answered"
   },
   {
@@ -12,7 +20,63 @@
     "expected_status": "answered"
   },
   {
-    "question": "Which company should I invest in?",
+    "question": "Who is the current CFO of TCS?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "What happened to IT sector stocks last week?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "What is the airspeed velocity of an unladen swallow?",
     "expected_status": "refused"
+  },
+  {
+    "question": "How much did revenue decrease in FY25 and why?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "Compare Infosys and Wipro revenue growth over the last four fiscal years and explain the major differences.",
+    "expected_status": "answered"
+  },
+  {
+    "question": "How did Infosys' current stock performance compare to its FY2025 revenue growth?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "Which company had the highest EPS in FY2025?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "Compare the latest stock performance of Infosys and Wipro.",
+    "expected_status": "answered"
+  },
+  {
+    "question": "Which company had the highest operating margin in FY2025 and what factors contributed to it?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "How did TCS's current stock performance compare to its FY2025 revenue growth?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "Compare the profitability trends of Infosys, TCS, and Wipro over the last four fiscal years and explain the causes.",
+    "expected_status": "answered"
+  },
+  {
+    "question": "What risks did Infosys mention in its FY2025 annual report?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "Can you predict Infosys stock price next month?",
+    "expected_status": "refused"
+  },
+  {
+    "question": "What was Infosys' operating margin in FY25?",
+    "expected_status": "answered"
+  },
+  {
+    "question": "What strategic priorities did Infosys highlight in FY25 MD&A?",
+    "expected_status": "answered"
   }
 ]
