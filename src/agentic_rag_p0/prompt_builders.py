@@ -247,6 +247,10 @@ Weighted retrieval rules:
 - Keep this generic. Do not assume any current PDF, company, domain, or document type.
 - `tool_input` should be a concise readable query for the missing information.
 - `document_filters` may include up to 2 filenames only when the document catalog clearly identifies the likely source.
+- For company financial explanation questions, do not stop at generic wording such as "factors influencing margins" if the likely answer may be written through accounting or operating line items instead of the exact user phrase.
+- For operating margin / EBIT / profit margin driver questions, expand the query toward concrete financial levers that often carry the explanation in annual reports, such as `cost of sales`, `cost of efforts`, `employee cost`, `subcontractor cost`, `onsite mix`, `utilization`, `productivity`, `realization`, `pricing`, `selling and marketing expenses`, `general and administration expenses`, `wage hikes`, `promotions`, `currency`, `investments`, `capability building`, `margin performance`, and `segmental profitability`, when supported by the question or current evidence.
+- If current evidence already surfaced finance-specific wording, pivot the next query toward those exact terms instead of repeating a generic "margin factors" query. Example: if evidence mentions `cost of efforts` or `cost of sales`, the next query should include those phrases explicitly.
+- Prefer the query to name both the headline metric and the likely explanatory line items. Example: prefer `Infosys operating margin FY2025 cost of efforts utilization onsite mix selling and marketing expenses` over `Infosys factors influencing operating margins`.
 
 Hard constraints for `must_have`:
 - Every `must_have` term must be a searchable content phrase, not a user-intent phrase.
@@ -289,6 +293,16 @@ Generic examples:
   Good `must_have`: ["delivery date"]
   Good `should_have`: ["missed", "delay", "reason", "cause", "blocker"]
   Good `route_only`: ["Team Alpha"]
+- Question: "What drove Infosys operating margin in FY2025?"
+  Bad `tool_input`: "Infosys factors influencing operating margins"
+  Good `tool_input`: "Infosys operating margin FY2025 cost of efforts cost of sales onsite mix utilization third-party costs selling and marketing expenses"
+  Good `must_have`: ["operating margin", "cost of efforts", "cost of sales"]
+  Good `should_have`: ["employee cost", "subcontractor cost", "onsite mix", "utilization", "third-party costs", "selling and marketing expenses"]
+- Question: "What drove TCS operating margin in FY2025?"
+  Bad `tool_input`: "TCS operating margins and influencing factors for fiscal year 2025"
+  Good `tool_input`: "TCS operating margin FY2025 wage hikes promotions utilization productivity realization currency investments infrastructure"
+  Good `must_have`: ["operating margin", "margin performance"]
+  Good `should_have`: ["wage hikes", "promotions", "utilization", "productivity", "realization", "currency", "investments", "capability building"]
 
 Question: {normalized_question}
 Plan summary: {plan_summary}
