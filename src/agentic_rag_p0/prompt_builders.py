@@ -19,6 +19,11 @@ Return JSON only with this shape:
   "reason": "string"
 }}
 
+STRICT REFUSAL RULES:
+- If the user asks for stock price predictions, investment advice, or "will the stock go up/down" type of forecasting, you MUST set mode='refusal' and reason='The system does not provide speculative financial advice or stock price predictions.'
+- If the question is about unrelated trivia, jokes, or non-business topics, set mode='refusal'.
+- If the question is about company history, financials, strategy, or recent developments, it is valid (mode='single-tool' or 'multi-tool').
+
 Corpus metadata:
 {json.dumps(corpus_metadata, indent=2)}
 
@@ -48,6 +53,7 @@ Planning rules:
 - REMEMBER ITS BETTER DATA QUALITY OVER QUANTITY. DO NOT PLAN TO CALL A TOOL JUST TO CALL A TOOL.
 - In case you are using search_docs if you are not satisfied with the quality of the retrieved evidence, let the system redirect to web_search instead of creating new subgoals for more search_docs calls to check if the data is enough or not be a midly strict analyzer.
 - Use web_search only if the local structured/doc metadata does not appear sufficient or the question is explicitly recent/current.
+- STRICT SCALAR RULE: If the user asks for quantitative metrics (revenue, profit, growth rates, etc.) and these columns/metrics appear in the structured metadata, you MUST prioritize query_data for those figures. Do not plan to search for raw numbers in local documents if they are available in the structured database.
 - Do not create extra subgoals once one local tool can answer the question.
 - If local docs are likely to contain only indirect or comparative commentary, keep the plan open for a later redirect(AS THE AGENT CAN REDIRECT IF U THINK THE DATA IS NOT ENOUGH TO WEB SEARCH) rather than assuming local evidence will be enough.
 - Important very Important : in case the question has anything related to current or future data or explicitly mentions that it needs current or future data prefer web search this is important when the words current is given dont plan to searh locally but use the web plan to search the we 
@@ -153,6 +159,7 @@ Rules:
 - Do not return a single-year or single-value query when the reasoning requires multiple years, multiple entities, or a before-vs-after comparison.
 - If the agent needs to verify whether a value increased or decreased in FYX, fetch FYX and the immediately relevant comparison period from the structured data whenever available.
 - If the question compares companies, return all requested companies in one query whenever possible.
+- For any "did it increase/decrease" question, include both the target period and the relevant comparison period.
 - If the question asks for a table/comparison, return the columns needed for that comparison rather than a single scalar.
 - Use WHERE filters that are explicit and minimal, and use IN (...) when multiple entities or years are needed.
 - Prefer returning raw values needed for reasoning over a prematurely narrowed query.
@@ -185,10 +192,12 @@ def build_tool_input_prompt(
     current_evidence: list[dict],
     tool_descriptions: dict[str, str],
     document_catalog: list[dict] | None = None,
+    action_rationale: str = "",
 ) -> str:
     return f"""
 Generate the input for the tool `{action}`.
 Tool description: {tool_descriptions[action]}
+Action rationale (Why you are performing this action): {action_rationale}
 Important : Only in case of web_search action use why where and other forms of question to make the query more specific and natural as if a person is asking this query to a search engine. also use adverbs and nouns to make the query more specific and natural.
 IMportant: keep the questions generated for web_search dont include any words which does not have any relation to the question such as significant , notable eg- if you create the question for finding data abot profit margin of company xxx from year 2024 the question should be simple "Why did XXX Profit increase in @024 not something like why did it increse significantly or notably questions should be simple "
 The Input must be specific for every tool and follow the rules:
@@ -207,6 +216,15 @@ The Input must be specific for every tool and follow the rules:
 - For web_search, after one mixed comparative web query or when a specific company/entity/subgoal is still weak, generate the query for exactly ONE unresolved company/entity/subgoal only. Do not keep repeating mixed multi-company queries.
 - For targeted web_search, keep the other unresolved companies/entities/subgoals for later calls through the subgoal state. Example targeted queries: "Why did Infosys operating margin change FY2024" or "Why did TCS operating margin change FY2024".
 - eg of web query in case of something based on tcs current stock price write the query as "whats the current stock price of tcs " also use the adverbs and nouns dont make the prompt bland like "TCS margin improvement FY2024 reasons" like this this does not provide any good info tha api we are using here is Tavily Api constrct a prompt fot it.
+
+STRICT WEB DIVERSIFICATION RULES:
+- Examine the `current_evidence` for any previous `web_search` tool inputs. 
+- You MUST NOT repeat a query that has already been attempted.
+- If a previous broad query (e.g., "Infosys vs Wipro growth") only returned general news, you MUST PIVOT to a highly specific "Deep Dive" query for one missing dimension (e.g., "Wipro BFSI sector revenue performance 2023").
+- If one entity/company is already well-supported by evidence, EXPLICITLY focus the next query on the UNRESOLVED or WEAK entity. Do not keep searching for both if one is solved.
+- Change retrieval angles: if "reasons for growth" failed, try searching for "segmental performance," "client acquisitions," or "operational challenges" for that specific company.
+- Avoid repetitive keywords. If "revenue growth" is in every previous query, try "top-line performance," "sales contraction," or "market share change."
+
 Return JSON only:
 {{do
   "tool_input": "string",
@@ -226,10 +244,12 @@ def build_weighted_search_docs_input_prompt(
     current_evidence: list[dict],
     tool_descriptions: dict[str, str],
     document_catalog: list[dict] | None = None,
+    action_rationale: str = "",
 ) -> str:
     return f"""
 Generate the input for the tool `search_docs`.
 Tool description: {tool_descriptions["search_docs"]}
+Action rationale (Why you are performing this action): {action_rationale}
 
 Return JSON only with this shape:
 {{
@@ -240,8 +260,27 @@ Return JSON only with this shape:
     "should_have": ["string"],
     "context": ["string"],
     "route_only": ["string"]
-  }}
+  }},
+  "diversification_note": "string (optional: explain changes from prior query if this is a retry, or state if subgoal is locally exhausted)"
 }}
+
+CRITICAL DIVERSIFICATION RULE FOR REPEATED SUBGOALS:
+- Examine the current_evidence below for any previous `search_docs` `tool_input` values.
+- If the same subgoal (same topic/metric/company/period) has already been searched, you MUST generate a materially different query.
+- Material difference means: change retrieval intent, not just word order. Do NOT return a paraphrase of the previous query.
+- For repeated subgoal attempts, MUST change at least 2 of these dimensions:
+  - section hint (e.g., "management discussion analysis" → "financial notes")
+  - target concept nouns (e.g., "operating margin" → "EBIT" or "profit after tax")
+  - supporting terms (e.g., "utilization" → "realization" or "onsite mix")
+  - timeframe wording (e.g., "FY2024" → "fiscal 2024" or "year ending")
+  - adjacent business terms (e.g., "cost of sales" → "gross profit" or "direct costs")
+  - document/company names (select different document containers if available)
+- If previous searches returned boilerplate, generic section-location text, or irrelevant sections, PIVOT AWAY from those terms.
+- Do NOT repeat the same dominant phrase pair (e.g., "operating margin FY2024") across retries unless evidence explicitly shows that previous retrieval was good.
+- Bad retry: "operating margin FY2024 cost factors" → "operating margin in FY2024 cost influences" (only word order changed)
+- Good retry: "operating margin FY2024 cost of efforts" → "EBIT drivers FY2024 employee cost subcontractor cost realization" (different metric and driver terms)
+- For the same subgoal, the new `tool_input` MUST be observably different from all prior `search_docs` queries shown in current_evidence.
+- If you cannot produce a materially different query angle, explicitly state in the JSON response that this subgoal may be exhausted locally and suggest to the agent that web_search should be considered instead.
 
 Weighted retrieval rules:
 - Keep this generic. Do not assume any current PDF, company, domain, or document type.
@@ -331,6 +370,7 @@ Rules:
 - If a single structured lookup already returns the requested scalar/comparison, mark outcome=sufficient.
 - Use the structured metadata to judge whether the unresolved information should come from query_data. If the needed entity/metric/year clearly exists in the structured database and the current evidence is missing only that structured value, prefer next_action=query_data.
 - Use the document metadata to judge whether the unresolved information should come from search_docs. If the needed evidence is likely in local documents and the last action was not search_docs, prefer next_action=search_docs.
+- ANTI-FISHING RULE: If the last two actions were search_docs and the agent is still missing specific numerical figures (revenue, net income, etc.) that exist in the structured metadata, do NOT suggest search_docs again. Instead, set next_action=query_data to fetch the figures directly from the database.
 - If all subgoals are done or only cosmetic follow-up work remains, mark outcome=sufficient.
 - Do not request more tool calls just to restate or validate an already grounded answer.
 - If local doc evidence confirms the topic but does not explicitly answer the asked explanation, prefer outcome=continue so the system can handle any needed redirect.
@@ -371,6 +411,7 @@ def build_sufficiency_with_evidence_review_prompt(
     subgoals_before_update: list[dict],
     evidence_payload: list[dict],
     corpus_metadata: dict[str, object],
+    tool_execution_context: dict[str, object] | None = None,
 ) -> str:
     base_prompt = build_sufficiency_prompt(
         normalized_question,
@@ -380,7 +421,57 @@ def build_sufficiency_with_evidence_review_prompt(
         evidence_payload,
         corpus_metadata,
     )
-    return f"""{base_prompt}
+    
+    # Build tool execution reasoning section
+    tool_execution_section = ""
+    if tool_execution_context:
+        tool_counts = tool_execution_context.get("tool_counts", {})
+        tool_history = tool_execution_context.get("tool_history", [])
+        total_steps = tool_execution_context.get("total_steps", 0)
+        max_steps = tool_execution_context.get("max_steps", 8)
+        
+        tool_execution_section = f"""
+Tool Execution Context and Reasoning Requirements:
+
+TOOL EXECUTION COUNTS (so far):
+- search_docs: {tool_counts.get("search_docs", 0)} times
+- query_data: {tool_counts.get("query_data", 0)} times
+- web_search: {tool_counts.get("web_search", 0)} times
+- Steps used: {total_steps}/{max_steps}
+
+TOOL EXECUTION HISTORY:
+{json.dumps(tool_history, indent=2)}
+
+DETERMINISTIC FALLBACK REASONING RULES:
+Use the tool execution context above to inform your decision:
+
+1. search_docs Behavior:
+   - If search_docs count is 1 and latest evidence is weak but somewhat relevant: prefer another refined search_docs with different retrieval angle.
+   - If search_docs count is 2+ and evidence is weak, repetitive, or boilerplate: strongly prefer escalating to web_search instead.
+   - If search_docs count is 3+ regardless of evidence quality: almost always prefer web_search escalation unless evidence is strong.
+   - Signal: If evidence shows same pages/sections repeating across search_docs calls, the local corpus is likely exhausted.
+
+2. web_search Behavior:
+   - If web_search count is 0 and search_docs evidence is weak: prefer web_search escalation.
+   - If web_search count is 1 and evidence is still irrelevant/generic: avoid repeating web_search unless the current query was clearly poorly formulated.
+   - If web_search count is 2+: only continue if evidence quality is improving and clearly needed. Otherwise, prefer answer or refuse.
+
+3. query_data Behavior:
+   - If query_data count is 1 and the requested scalar/comparison/metric is fully answered: do not repeat query_data.
+   - If query_data count is 1 and evidence is partial/weak: consider web_search before another query_data unless schema clearly supports retry.
+
+4. Cross-Tool Decision Logic:
+   - If latest tool produced strong evidence: strongly prefer outcome=sufficient.
+   - If alternating between search_docs and web_search without improving: prefer refuse over continuing oscillation.
+   - If approaching max_steps (within 2 steps): prefer answer or refuse, avoid continuing exploration.
+
+5. Exhaustion Signals:
+   - Repeated pages/sections in search_docs evidence = local corpus exhausted
+   - Generic/boilerplate results across multiple search_docs = local corpus exhausted
+   - Time to escalate: exactly 2-3 search_docs attempts before web_search
+"""
+    
+    return f"""{base_prompt}{tool_execution_section}
 
 Additional evidence review requirement:
 - In the same JSON response, also review the evidence items shown above.

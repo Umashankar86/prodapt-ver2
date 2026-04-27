@@ -210,9 +210,12 @@ class AgentService:
         if a == "query_data": return self.llm.generate_json(build_query_data_input_prompt(s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence[-3:]], get_db_schema(self.settings.sqlite_db_path), get_db_metadata(self.settings.sqlite_db_path, sample_rows=3)), model_id=self.settings.gemini_fast_model)["tool_input"]
         document_catalog = get_doc_index_metadata(self.settings.doc_index_path).get("documents", []) if a == "search_docs" else None
         if a == "search_docs":
-            built = self.llm.generate_json(build_weighted_search_docs_input_prompt(s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence[-3:]], self.tool_descriptions, document_catalog=document_catalog if isinstance(document_catalog, list) else None), model_id=self.settings.gemini_fast_model)
+            # Pass ALL search_docs evidence (not just last 3) so diversification logic can detect repeated queries
+            search_docs_evidence = [e.to_dict() for e in s.evidence if e.source_tool == "search_docs"]
+            current_evidence_for_prompt = search_docs_evidence + [e.to_dict() for e in s.evidence[-3:] if e.source_tool != "search_docs"]
+            built = self.llm.generate_json(build_weighted_search_docs_input_prompt(s.normalized_question, s.plan_summary, current_evidence_for_prompt, self.tool_descriptions, document_catalog=document_catalog if isinstance(document_catalog, list) else None, action_rationale=action_rationale), model_id=self.settings.gemini_fast_model)
         else:
-            built = self.llm.generate_json(build_tool_input_prompt(a, s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence[-3:]], self.tool_descriptions, document_catalog=document_catalog if isinstance(document_catalog, list) else None), model_id=self.settings.gemini_fast_model)
+            built = self.llm.generate_json(build_tool_input_prompt(a, s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence[-3:]], self.tool_descriptions, document_catalog=document_catalog if isinstance(document_catalog, list) else None, action_rationale=action_rationale), model_id=self.settings.gemini_fast_model)
         raw = str(built.get("tool_input", "")).strip()
         if a != "search_docs":
             return raw
@@ -261,7 +264,66 @@ class AgentService:
         except Exception as err: exc = err; self.log_tool_error(s, a, rationale, tool_input, err, step_number=step_number)
         if s.steps_used >= self.max_tool_calls: raise
         return self.run_tool(s, a, self.reformulate_tool_input(s, a, tool_input, exc), f"{rationale} | retry after error", retry_count=1, step_number=step_number, count_step=False)
-    def check_sufficiency(self, s: AgentState, a: str, summary: str) -> dict: return self.llm.generate_json(build_sufficiency_with_evidence_review_prompt(s.normalized_question, a, summary, [g.to_dict() for g in s.subgoals], [e.to_dict() for e in s.evidence[-6:]], self._meta()), model_id=self.settings.gemini_fast_model)
+    def _build_tool_execution_context(self, s: AgentState) -> dict:
+        """Build tool execution counts and history for sufficiency reasoning."""
+        tool_counts = {"search_docs": 0, "query_data": 0, "web_search": 0}
+        tool_history = []
+        
+        # Count tools and build history from trace
+        for step in s.trace:
+            tool_name = step.action
+            if tool_name in tool_counts:
+                tool_counts[tool_name] += 1
+            
+            # Infer quality from evidence usability and result summary
+            quality = self._infer_tool_quality(step.action, step.result_summary, s)
+            
+            tool_history.append({
+                "step_number": step.step_number,
+                "tool_name": tool_name,
+                "quality": quality,
+                "status": step.status,
+                "result_summary": step.result_summary[:100] if step.result_summary else ""
+            })
+        
+        return {
+            "tool_counts": tool_counts,
+            "tool_history": tool_history,
+            "total_steps": s.steps_used,
+            "max_steps": self.max_tool_calls
+        }
+    
+    def _infer_tool_quality(self, tool_name: str, result_summary: str, s: AgentState) -> str:
+        """Infer tool result quality from evidence usability patterns."""
+        if not result_summary:
+            return "unknown"
+        
+        # Get evidence from this tool
+        tool_evidence = [e for e in s.evidence if e.source_tool == tool_name]
+        if not tool_evidence:
+            return "weak"
+        
+        # Count usable vs unusable
+        usable_count = sum(1 for e in tool_evidence if e.usable)
+        total_count = len(tool_evidence)
+        
+        if usable_count == 0:
+            return "weak"
+        elif usable_count == total_count:
+            return "strong"
+        else:
+            return "partial"
+    
+    def check_sufficiency(self, s: AgentState, a: str, summary: str) -> dict: 
+        # Pass ALL search_docs evidence so sufficiency checker can detect repeated queries and decide web escalation
+        search_docs_evidence = [e.to_dict() for e in s.evidence if e.source_tool == "search_docs"]
+        other_evidence = [e.to_dict() for e in s.evidence[-6:] if e.source_tool != "search_docs"]
+        evidence_for_sufficiency = search_docs_evidence + other_evidence
+        
+        # Build tool execution context for better sufficiency reasoning
+        tool_execution_context = self._build_tool_execution_context(s)
+        
+        return self.llm.generate_json(build_sufficiency_with_evidence_review_prompt(s.normalized_question, a, summary, [g.to_dict() for g in s.subgoals], evidence_for_sufficiency, self._meta(), tool_execution_context), model_id=self.settings.gemini_fast_model)
     def apply_evidence_updates(self, s: AgentState, updates: list[dict]) -> None:
         by_id = {e.evidence_id: e for e in s.evidence}
         for update in updates or []:
