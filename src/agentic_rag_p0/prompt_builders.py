@@ -3,7 +3,21 @@ from __future__ import annotations
 import json
 
 
+def _compact_corpus_metadata_for_llm(corpus_metadata: dict[str, object]) -> dict[str, object]:
+    if not isinstance(corpus_metadata, dict):
+        return {}
+    compact = dict(corpus_metadata)
+    documents = compact.get("documents")
+    if isinstance(documents, dict):
+        compact["documents"] = {
+            "document_count": documents.get("document_count", 0),
+            "corpus_summary": documents.get("corpus_summary", ""),
+        }
+    return compact
+
+
 def build_understand_question_prompt(question: str, corpus_metadata: dict[str, object]) -> str:
+    compact_corpus_metadata = _compact_corpus_metadata_for_llm(corpus_metadata)
     return f"""
 You are the question-understanding stage for an agentic RAG system.
 Classify the user question for a system that has exactly these tools: search_docs, query_data, web_search.
@@ -25,7 +39,7 @@ STRICT REFUSAL RULES:
 - If the question is about company history, financials, strategy, or recent developments, it is valid (mode='single-tool' or 'multi-tool').
 
 Corpus metadata:
-{json.dumps(corpus_metadata, indent=2)}
+{json.dumps(compact_corpus_metadata, indent=2)}
 
 Question: {question}
 """
@@ -37,6 +51,7 @@ def build_plan_prompt(
     corpus_metadata: dict[str, object],
     tool_descriptions: dict[str, str],
 ) -> str:
+    compact_corpus_metadata = _compact_corpus_metadata_for_llm(corpus_metadata)
     return f"""
 You are the planning stage for an agentic RAG system with exactly three tools.
 
@@ -46,9 +61,21 @@ Tools:
 - web_search: {tool_descriptions["web_search"]}
 
 Planning rules:
+
 - Keep subgoals minimal. Prefer 1 subgoal for single-fact questions.
 - If structured metadata already shows the needed metric/entity/year columns, prefer query_data first.
 - If document metadata shows strong topical alignment with the question and potential for direct evidence, prefer search_docs first.
+- Treat the document `corpus_summary` as the primary authority for local document time coverage.
+- If the `corpus_summary` says the local documents cover only a specific period such as `2025`, `FY2025`, or `2024-25`, do NOT plan as if those same documents can answer a different period such as `2024` unless the metadata or question explicitly supports that exact period through another local source.
+- Do not silently reinterpret a user request for `2024` as `2025` or `2024-25`.
+- If the requested time period does not match the time period stated in the document `corpus_summary`, mark that as a coverage risk and avoid planning a document-only answer for that mismatched year.
+- On a document-period mismatch, prefer a cautious plan: use another matching local source only if clearly supported, otherwise keep the plan limited and note the date mismatch explicitly instead of assuming the docs contain the requested year.
+- HARD DATE INTERPRETATION RULE: treat a report labeled `2024-25` as covering the fiscal period ending in `2025`, not as a direct source for `FY2024` explanations.
+- HARD DATE INTERPRETATION RULE: a later-period report may mention prior-year numbers for comparison, but that does NOT mean it is a reliable direct source for "what did the company say about FY2024 reasons/drivers/explanations".
+- HARD DATE INTERPRETATION RULE: if the user asks for qualitative explanation about `FY2024` and the summary only says `2024-25` or `FY2025`, do NOT plan `search_docs` as the main path just because the report contains comparative FY2024 figures.
+- HARD DATE INTERPRETATION RULE: for explanation/reason/driver questions, require exact period alignment between the requested period and the summary's stated coverage before planning `search_docs`.
+- STRICT EXAMPLE: question asks `Why did TCS margin increase in FY2024?`; summary says `TCS report covers 2024-25`; this is a mismatch, so do NOT plan as if the TCS report is the right local document source for FY2024 explanations.
+- STRICT EXAMPLE: question asks `What does TCS say about FY2025 margin?`; summary says `2024-25`; this is aligned, so `search_docs` can be planned.
 - if the data changes with time like current rate stock prices go with web_search not local docs dynamic data with relation to time should be planned to use web search.
 - REMEMBER ITS BETTER DATA QUALITY OVER QUANTITY. DO NOT PLAN TO CALL A TOOL JUST TO CALL A TOOL.
 - In case you are using search_docs if you are not satisfied with the quality of the retrieved evidence, let the system redirect to web_search instead of creating new subgoals for more search_docs calls to check if the data is enough or not be a midly strict analyzer.
@@ -67,6 +94,8 @@ Planning rules:
   - `subgoals` should contain one blocked subgoal describing refusal
   - `likely_tools` should be []
   - `risks` should include `out_of_scope`
+- If there is a document time-coverage mismatch, mention the exact mismatch in `plan_summary` and include `date_coverage_mismatch` in `risks`.
+- If there is a document time-coverage mismatch for a qualitative explanation question, do NOT include `search_docs` in `likely_tools`.
 - Do not mark recent company, stock, sector, or market questions as out-of-scope just because the local corpus is insufficient; those should normally plan for web_search.
 - Example out-of-scope question: "What is the airspeed velocity of an unladen swallow?"
 
@@ -85,7 +114,7 @@ Question understanding:
 {json.dumps(understanding, indent=2)}
 
 Corpus metadata:
-{json.dumps(corpus_metadata, indent=2)}
+{json.dumps(compact_corpus_metadata, indent=2)}
 
 Question:
 {normalized_question}
@@ -102,6 +131,7 @@ def build_choose_next_action_prompt(
     steps_used: int,
     max_tool_calls: int,
 ) -> str:
+    compact_corpus_metadata = _compact_corpus_metadata_for_llm(corpus_metadata)
     return f"""
 You are the action selector for a bounded agent loop.
 Choose exactly one next action from: search_docs, query_data, web_search, answer, refuse.
@@ -135,7 +165,7 @@ Plan summary: {plan_summary}
 Likely tools: {json.dumps(likely_tools)}
 Subgoals: {json.dumps(subgoals_payload, indent=2)}
 Recent evidence: {json.dumps(evidence_payload, indent=2)}
-Corpus metadata: {json.dumps(corpus_metadata, indent=2)}
+Corpus metadata: {json.dumps(compact_corpus_metadata, indent=2)}
 Steps used: {steps_used}
 """
 
@@ -191,7 +221,7 @@ def build_tool_input_prompt(
     plan_summary: str,
     current_evidence: list[dict],
     tool_descriptions: dict[str, str],
-    document_catalog: list[dict] | None = None,
+    document_corpus_summary: str = "",
     action_rationale: str = "",
 ) -> str:
     return f"""
@@ -203,7 +233,7 @@ IMportant: keep the questions generated for web_search dont include any words wh
 The Input must be specific for every tool and follow the rules:
 - for web_search , use why or what or how or when or which in the query to make it more specific and natural as if a person is asking this query to a search engine. also use adverbs and nouns to make the query more specific and natural.
 - For search_docs, return a concise query string optimized for retrieving relevant documents. Use keywords and filters based on the question, plan, and current evidence. Do not return a full sentence.
-- For search_docs, you may also choose up to 2 document containers from the document catalog when the likely source documents are clear. Prefer selecting the most relevant document containers instead of searching every document.
+- For search_docs, you may also choose up to 2 document filters when the corpus summary clearly identifies the likely source documents.
 - Additional search_docs query quality rule: write retrieval queries as dense keywords, not instructions. Do not start with words like "Search", "Find", "Retrieve", or "Look for".
 - Additional search_docs query quality rule: for margin/profit driver questions, include section and driver terms such as "management discussion analysis", "operating margin", "cost of sales", "employee cost", "subcontractor cost", "pricing", "utilization", "efficiency", "large deals", "FY2024", and the company name when relevant.
 - Additional search_docs query quality rule: prefer queries like "TCS operating margin pricing models efficiency FY2024 management discussion" instead of "Search the TCS annual report to find factors influencing operating margin".
@@ -234,7 +264,8 @@ Return JSON only:
 Question: {normalized_question}
 Plan summary: {plan_summary}
 Current evidence: {json.dumps(current_evidence, indent=2)}
-Document catalog: {json.dumps(document_catalog or [], indent=2)}
+Document corpus summary:
+{document_corpus_summary}
 """
 
 
@@ -243,7 +274,7 @@ def build_weighted_search_docs_input_prompt(
     plan_summary: str,
     current_evidence: list[dict],
     tool_descriptions: dict[str, str],
-    document_catalog: list[dict] | None = None,
+    document_corpus_summary: str = "",
     action_rationale: str = "",
 ) -> str:
     return f"""
@@ -285,7 +316,7 @@ CRITICAL DIVERSIFICATION RULE FOR REPEATED SUBGOALS:
 Weighted retrieval rules:
 - Keep this generic. Do not assume any current PDF, company, domain, or document type.
 - `tool_input` should be a concise readable query for the missing information.
-- `document_filters` may include up to 2 filenames only when the document catalog clearly identifies the likely source.
+- `document_filters` may include up to 2 filenames only when the corpus summary clearly identifies the likely source.
 - For company financial explanation questions, do not stop at generic wording such as "factors influencing margins" if the likely answer may be written through accounting or operating line items instead of the exact user phrase.
 - For operating margin / EBIT / profit margin driver questions, expand the query toward concrete financial levers that often carry the explanation in annual reports, such as `cost of sales`, `cost of efforts`, `employee cost`, `subcontractor cost`, `onsite mix`, `utilization`, `productivity`, `realization`, `pricing`, `selling and marketing expenses`, `general and administration expenses`, `wage hikes`, `promotions`, `currency`, `investments`, `capability building`, `margin performance`, and `segmental profitability`, when supported by the question or current evidence.
 - If current evidence already surfaced finance-specific wording, pivot the next query toward those exact terms instead of repeating a generic "margin factors" query. Example: if evidence mentions `cost of efforts` or `cost of sales`, the next query should include those phrases explicitly.
@@ -346,7 +377,8 @@ Generic examples:
 Question: {normalized_question}
 Plan summary: {plan_summary}
 Current evidence: {json.dumps(current_evidence, indent=2)}
-Document catalog: {json.dumps(document_catalog or [], indent=2)}
+Document corpus summary:
+{document_corpus_summary}
 """
 
 
@@ -358,8 +390,9 @@ def build_sufficiency_prompt(
     evidence_payload: list[dict],
     corpus_metadata: dict[str, object],
 ) -> str:
-    structured_metadata = corpus_metadata.get("structured", []) if isinstance(corpus_metadata, dict) else []
-    document_metadata = corpus_metadata.get("documents", {}) if isinstance(corpus_metadata, dict) else {}
+    compact_corpus_metadata = _compact_corpus_metadata_for_llm(corpus_metadata)
+    structured_metadata = compact_corpus_metadata.get("structured", []) if isinstance(compact_corpus_metadata, dict) else []
+    document_metadata = compact_corpus_metadata.get("documents", {}) if isinstance(compact_corpus_metadata, dict) else {}
     return f"""
 You are the sufficiency checker for an agentic RAG/structure/web loop.
 Decide whether the agent should answer, continue, or refuse.
