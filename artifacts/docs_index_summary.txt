@@ -1,0 +1,4 @@
+This corpus contains Integrated Annual Reports from infosys-ar-25.pdf, tcs.pdf, and wipro.pdf.
+The Infosys, Wipro and TCS reports cover 2024-25 Annual Report.
+Main topics include AI's transformative role, its adoption, scaling, and responsible implementation in businesses.
+All Financial Data is available here

@@ -208,14 +208,16 @@ class AgentService:
         }
     def build_tool_input(self, s: AgentState, a: str, action_rationale: str = "") -> object:
         if a == "query_data": return self.llm.generate_json(build_query_data_input_prompt(s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence[-3:]], get_db_schema(self.settings.sqlite_db_path), get_db_metadata(self.settings.sqlite_db_path, sample_rows=3)), model_id=self.settings.gemini_fast_model)["tool_input"]
-        document_catalog = get_doc_index_metadata(self.settings.doc_index_path).get("documents", []) if a == "search_docs" else None
+        document_metadata = get_doc_index_metadata(self.settings.doc_index_path) if a == "search_docs" else {}
+        document_catalog = document_metadata.get("documents", []) if isinstance(document_metadata, dict) else []
+        document_corpus_summary = str(document_metadata.get("corpus_summary", "")) if isinstance(document_metadata, dict) else ""
         if a == "search_docs":
             # Pass ALL search_docs evidence (not just last 3) so diversification logic can detect repeated queries
             search_docs_evidence = [e.to_dict() for e in s.evidence if e.source_tool == "search_docs"]
             current_evidence_for_prompt = search_docs_evidence + [e.to_dict() for e in s.evidence[-3:] if e.source_tool != "search_docs"]
-            built = self.llm.generate_json(build_weighted_search_docs_input_prompt(s.normalized_question, s.plan_summary, current_evidence_for_prompt, self.tool_descriptions, document_catalog=document_catalog if isinstance(document_catalog, list) else None, action_rationale=action_rationale), model_id=self.settings.gemini_fast_model)
+            built = self.llm.generate_json(build_weighted_search_docs_input_prompt(s.normalized_question, s.plan_summary, current_evidence_for_prompt, self.tool_descriptions, document_corpus_summary=document_corpus_summary, action_rationale=action_rationale), model_id=self.settings.gemini_fast_model)
         else:
-            built = self.llm.generate_json(build_tool_input_prompt(a, s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence[-3:]], self.tool_descriptions, document_catalog=document_catalog if isinstance(document_catalog, list) else None, action_rationale=action_rationale), model_id=self.settings.gemini_fast_model)
+            built = self.llm.generate_json(build_tool_input_prompt(a, s.normalized_question, s.plan_summary, [e.to_dict() for e in s.evidence[-3:]], self.tool_descriptions, document_corpus_summary=document_corpus_summary, action_rationale=action_rationale), model_id=self.settings.gemini_fast_model)
         raw = str(built.get("tool_input", "")).strip()
         if a != "search_docs":
             return raw

@@ -7,7 +7,7 @@ from unittest.mock import patch
 import json
 
 from agentic_rag_p0.data_tool import build_sqlite_db, query_data
-from agentic_rag_p0.document_tool import build_doc_index, search_docs, upgrade_doc_metadata
+from agentic_rag_p0.document_tool import build_doc_index, get_doc_index_metadata, search_docs, upgrade_doc_metadata
 from agentic_rag_p0.web_tool import web_search
 
 
@@ -140,6 +140,8 @@ class ToolTests(unittest.TestCase):
             self.assertTrue(metadata["documents"])
             self.assertEqual(metadata["documents"][0]["subject_hint"], "WIPRO")
             self.assertIn("2025", metadata["documents"][0]["temporal_markers"])
+            self.assertIn("summary", metadata["documents"][0])
+            self.assertEqual(len(metadata["documents"][0]["summary"].splitlines()), 4)
             self.assertIn("store_path", metadata["documents"][0])
             self.assertTrue(Path(metadata["documents"][0]["store_path"]).exists())
             self.assertIn("page_store_path", metadata["documents"][0])
@@ -148,6 +150,26 @@ class ToolTests(unittest.TestCase):
             page_store = json.loads(page_store_path.read_text(encoding="utf-8"))
             self.assertEqual(page_store["filename"], "wipro_report.txt")
             self.assertEqual(page_store["pages"][0]["page_number"], 1)
+
+    def test_get_doc_index_metadata_returns_compact_llm_view(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_dir = root / "docs"
+            docs_dir.mkdir()
+            (docs_dir / "tcs.pdf.txt").write_text(
+                "TCS annual performance overview for FY2025. Margin improved because utilization and productivity increased.",
+                encoding="utf-8",
+            )
+            index_path = root / "docs_index.json"
+            build_doc_index(docs_dir, index_path)
+
+            metadata = get_doc_index_metadata(index_path)
+
+            self.assertEqual(metadata["document_count"], 1)
+            self.assertEqual(metadata["documents"], [{"filename": "tcs.pdf.txt"}])
+            self.assertEqual(metadata["document_corpus"], ["tcs.pdf.txt"])
+            self.assertEqual(metadata["document_summaries"][0]["filename"], "tcs.pdf.txt")
+            self.assertEqual(len(metadata["document_summaries"][0]["summary"].splitlines()), 4)
 
     def test_upgrade_doc_metadata_enriches_old_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

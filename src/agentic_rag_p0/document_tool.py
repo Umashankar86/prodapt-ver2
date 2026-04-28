@@ -9,6 +9,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -55,6 +56,9 @@ EXPLANATION_QUERY_TERMS = {"reason", "why", "explain", "driver", "drivers", "fac
 FILENAME_NOISE_TOKENS = STOPWORDS | {"pdf", "txt", "md", "doc", "docx", "page", "pages", "part", "section", "chapter", "appendix", "final", "draft", "copy", "v1", "v2", "v3"}
 EMBEDDING_MODEL_NAME = os.environ.get("AGENTIC_RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 EMBEDDING_HASH_ID = f"sentence-transformers:{EMBEDDING_MODEL_NAME}"
+SUMMARY_PAGE_COUNT = 3
+SUMMARY_CHAR_BUDGET = 6000
+SUMMARY_LINE_COUNT = 4
 SECTION_HINTS = {
     "explanatory_text": ["overview", "summary", "background", "analysis", "discussion", "findings", "key points"],
     "tabular_reference": ["table", "figure", "appendix", "references", "glossary", "index"],
@@ -91,6 +95,100 @@ def _store_slug(filename: str) -> str:
     stem = Path(filename).stem.lower()
     slug = re.sub(r"[^a-z0-9]+", "-", stem).strip("-")
     return slug or "document"
+
+
+def _sanitize_summary_text(summary: str) -> str:
+    lines = [_normalize_whitespace(line) for line in summary.splitlines() if _normalize_whitespace(line)]
+    cleaned = [re.sub(r"^[\-\*\d\.\)\s]+", "", line).strip() for line in lines]
+    cleaned = [line for line in cleaned if line]
+    if not cleaned:
+        return ""
+    if len(cleaned) >= SUMMARY_LINE_COUNT:
+        return "\n".join(cleaned[:SUMMARY_LINE_COUNT])
+    while len(cleaned) < SUMMARY_LINE_COUNT:
+        cleaned.append(cleaned[-1])
+    return "\n".join(cleaned[:SUMMARY_LINE_COUNT])
+
+
+def _summary_excerpt(filename: str, pages: list[tuple[int | None, str]], page_limit: int = SUMMARY_PAGE_COUNT) -> str:
+    parts: list[str] = []
+    for page_number, page_text in pages[:page_limit]:
+        if not page_text:
+            continue
+        label = f"Page {page_number}" if page_number is not None else "Document text"
+        parts.append(f"{label}: {page_text[:1800]}")
+    excerpt = "\n\n".join(parts)
+    return excerpt[:SUMMARY_CHAR_BUDGET]
+
+
+def _fallback_document_summary(filename: str, pages: list[tuple[int | None, str]]) -> str:
+    full_text = " ".join(page_text for _, page_text in pages[:SUMMARY_PAGE_COUNT] if page_text)
+    years = _extract_temporal_markers(full_text)
+    metrics = _extract_metrics(full_text)[:4]
+    section_type = _detect_section_type(full_text) if full_text else "document_text"
+    section_title = _infer_section_title(full_text, section_type) if full_text else "Document Text"
+    subject_hints = _extract_subject_hints(filename)
+    line_1 = f"{filename} focuses on {' / '.join(subject_hints) or Path(filename).stem}."
+    line_2 = f"Opening pages center on {section_title.lower()} and {section_type.replace('_', ' ')} content."
+    line_3 = f"Likely time coverage: {', '.join(years[:4]) if years else 'not clear from the opening pages'}."
+    line_4 = f"Top early-page topics: {', '.join(metrics) if metrics else 'general corporate and financial commentary'}."
+    return _sanitize_summary_text("\n".join([line_1, line_2, line_3, line_4]))
+
+
+@lru_cache(maxsize=1)
+def _summary_llm_client():
+    if not os.environ.get("VERTEX_PROJECT_ID"):
+        return None
+    try:
+        from .config import load_settings
+        from .llm import GeminiClient
+        return GeminiClient(load_settings())
+    except Exception:
+        return None
+
+
+def _llm_document_summary(filename: str, pages: list[tuple[int | None, str]]) -> str:
+    client = _summary_llm_client()
+    if client is None:
+        return ""
+    excerpt = _summary_excerpt(filename, pages)
+    if not excerpt:
+        return ""
+    prompt = f"""
+You are summarizing a local document while a retrieval index is being built.
+Write exactly 4 short lines.
+- No bullets.
+- No markdown.
+- Keep each line under 140 characters.
+- Focus on scope, company/entity, timeframe, and main topics from the opening pages only.
+
+Document: {filename}
+Opening pages:
+{excerpt}
+"""
+    try:
+        return _sanitize_summary_text(client.generate_text(prompt, call_kind="doc_index_summary"))
+    except Exception:
+        return ""
+
+
+def _generate_document_summary(
+    filename: str,
+    pages: list[tuple[int | None, str]],
+    summary_generator: Callable[[str, str], str] | None = None,
+) -> str:
+    excerpt = _summary_excerpt(filename, pages)
+    generated = ""
+    if summary_generator is not None and excerpt:
+        try:
+            generated = summary_generator(filename, excerpt)
+        except Exception:
+            generated = ""
+    if not generated:
+        generated = _llm_document_summary(filename, pages)
+    if not generated:
+        generated = _fallback_document_summary(filename, pages)
+    return _sanitize_summary_text(generated) or _fallback_document_summary(filename, pages)
 
 
 @lru_cache(maxsize=1)
@@ -156,8 +254,12 @@ def _chunk_text(text: str, chunk_size: int = 180, overlap: int = 30) -> list[str
     return chunks
 
 
-def _metadata_file_path(index_path: Path) -> Path:
+def _legacy_metadata_file_path(index_path: Path) -> Path:
     return index_path.with_name(f"{index_path.stem}_metadata.json")
+
+
+def _summary_file_path(index_path: Path) -> Path:
+    return index_path.with_name(f"{index_path.stem}_summary.txt")
 
 
 def _detect_section_type(text: str) -> str:
@@ -285,118 +387,110 @@ def _build_enriched_chunk(
     )
 
 
-def _build_metadata_documents(chunks: list[DocChunk]) -> list[dict[str, object]]:
-    by_doc: dict[str, dict[str, object]] = {}
-    for chunk in chunks:
-        entry = by_doc.setdefault(
-            chunk.doc_id or Path(chunk.filename).stem,
-            {
-                "doc_id": chunk.doc_id or Path(chunk.filename).stem,
-                "filename": chunk.filename,
-                "subject_hint": "",
-                "source_kind": "report" if any(token in chunk.filename.lower() for token in ["report", "statement", "presentation", "filing"]) else "document",
-                "temporal_markers": set(),
-                "section_types": Counter(),
-                "keyword_coverage": set(),
-                "metrics_mentioned": set(),
-                "page_numbers": set(),
-                "chunk_count": 0,
-                "sample_chunks": [],
-                "avg_commentary_score": 0.0,
-                "avg_boilerplate_score": 0.0,
-            },
-        )
-        entry["chunk_count"] = int(entry["chunk_count"]) + 1
-        cast_pages = entry["page_numbers"]
-        assert isinstance(cast_pages, set)
-        if chunk.page_number is not None:
-            cast_pages.add(chunk.page_number)
-        temporal_markers = entry["temporal_markers"]
-        assert isinstance(temporal_markers, set)
-        for marker in chunk.years_mentioned or []:
-            temporal_markers.add(marker)
-        section_types = entry["section_types"]
-        assert isinstance(section_types, Counter)
-        section_types.update([chunk.section_type])
-        metrics = entry["metrics_mentioned"]
-        assert isinstance(metrics, set)
-        for metric in chunk.metrics_mentioned or []:
-            metrics.add(metric)
-        coverage = entry["keyword_coverage"]
-        assert isinstance(coverage, set)
-        for keyword in chunk.metrics_mentioned or []:
-            coverage.add(keyword)
-        sample_chunks = entry["sample_chunks"]
-        assert isinstance(sample_chunks, list)
-        if len(sample_chunks) < 5:
-            sample_chunks.append(
-                {
-                    "chunk_id": chunk.chunk_id,
-                    "page_number": chunk.page_number,
-                    "section_type": chunk.section_type,
-                    "content_preview": chunk.content[:180],
-                }
-            )
-        entry["avg_commentary_score"] = float(entry["avg_commentary_score"]) + chunk.commentary_score
-        entry["avg_boilerplate_score"] = float(entry["avg_boilerplate_score"]) + chunk.boilerplate_score
-        if not entry["subject_hint"] and chunk.companies_mentioned:
-            entry["subject_hint"] = chunk.companies_mentioned[0]
-
-    documents: list[dict[str, object]] = []
-    for entry in by_doc.values():
-        chunk_count = max(1, int(entry["chunk_count"]))
-        section_types = entry["section_types"]
-        assert isinstance(section_types, Counter)
-        documents.append(
-            {
-                "doc_id": entry["doc_id"],
-                "filename": entry["filename"],
-                "subject_hint": entry["subject_hint"],
-                "source_kind": entry["source_kind"],
-                "likely_type": entry["source_kind"],
-                "temporal_markers": sorted(entry["temporal_markers"]) if isinstance(entry["temporal_markers"], set) else [],
-                "section_types": dict(section_types.most_common()),
-                "keyword_coverage": sorted(entry["keyword_coverage"]) if isinstance(entry["keyword_coverage"], set) else [],
-                "metrics_mentioned": sorted(entry["metrics_mentioned"]) if isinstance(entry["metrics_mentioned"], set) else [],
-                "chunk_count": chunk_count,
-                "page_count_estimate": len(entry["page_numbers"]) if isinstance(entry["page_numbers"], set) else 0,
-                "page_numbers": sorted(entry["page_numbers"]) if isinstance(entry["page_numbers"], set) else [],
-                "avg_commentary_score": round(float(entry["avg_commentary_score"]) / chunk_count, 4),
-                "avg_boilerplate_score": round(float(entry["avg_boilerplate_score"]) / chunk_count, 4),
-                "sample_chunks": entry["sample_chunks"],
-                "store_id": _store_slug(str(entry["filename"])),
-            }
-        )
-    return sorted(documents, key=lambda item: str(item["filename"]))
+def _build_document_corpus(chunks: list[DocChunk]) -> list[str]:
+    return sorted({chunk.filename for chunk in chunks})
 
 
-def _build_metadata_payload(chunks: list[DocChunk], backend: str, index_path: Path) -> dict[str, object]:
-    documents = _build_metadata_documents(chunks)
-    section_counts = Counter(chunk.section_type for chunk in chunks)
-    subject_hint_counts = Counter(
-        subject_hint
-        for chunk in chunks
-        for subject_hint in (chunk.companies_mentioned or [])
+def _corpus_summary_excerpt(pages_by_filename: dict[str, list[tuple[int | None, str]]]) -> str:
+    excerpts: list[str] = []
+    for filename in sorted(pages_by_filename):
+        excerpts.append(f"Document: {filename}\n{_summary_excerpt(filename, pages_by_filename[filename])}")
+    return "\n\n".join(excerpts)[: SUMMARY_CHAR_BUDGET * 3]
+
+
+def _fallback_corpus_summary(pages_by_filename: dict[str, list[tuple[int | None, str]]]) -> str:
+    filenames = sorted(pages_by_filename)
+    opening_text = " ".join(
+        page_text
+        for filename in filenames
+        for _, page_text in pages_by_filename[filename][:SUMMARY_PAGE_COUNT]
+        if page_text
     )
+    years = _extract_temporal_markers(opening_text)
+    line_1 = f"Corpus files: {', '.join(filenames)}."
+    line_2 = "These are local annual or integrated financial reports for the covered companies."
+    line_3 = (
+        f"Opening pages mostly reference {', '.join(years[:4])} and recent business performance themes."
+        if years
+        else "Opening pages mainly cover recent business performance, strategy, governance, and outlook."
+    )
+    line_4 = "Pick the PDF matching the company in the question before searching inside the corpus."
+    return _sanitize_summary_text("\n".join([line_1, line_2, line_3, line_4]))
+
+
+def _llm_corpus_summary(pages_by_filename: dict[str, list[tuple[int | None, str]]]) -> str:
+    client = _summary_llm_client()
+    if client is None:
+        return ""
+    excerpt = _corpus_summary_excerpt(pages_by_filename)
+    if not excerpt:
+        return ""
+    prompt = f"""
+You are summarizing a local PDF corpus while a retrieval index is being built.
+Write exactly 4 short lines.
+- No bullets.
+- No markdown.
+- Keep each line under 140 characters.
+- Mention the PDF names present in the corpus.
+- Say what kind of reports these are, what period the opening pages point to, and the main topics they cover.
+
+Opening pages from the corpus:
+{excerpt}
+"""
+    try:
+        return _sanitize_summary_text(client.generate_text(prompt, call_kind="doc_index_summary"))
+    except Exception:
+        return ""
+
+
+def _generate_corpus_summary(
+    pages_by_filename: dict[str, list[tuple[int | None, str]]],
+    summary_generator: Callable[[str, str], str] | None = None,
+) -> str:
+    excerpt = _corpus_summary_excerpt(pages_by_filename)
+    generated = ""
+    if summary_generator is not None and excerpt:
+        try:
+            generated = summary_generator("corpus", excerpt)
+        except Exception:
+            generated = ""
+    if not generated:
+        generated = _llm_corpus_summary(pages_by_filename)
+    if not generated:
+        generated = _fallback_corpus_summary(pages_by_filename)
+    return _sanitize_summary_text(generated) or _fallback_corpus_summary(pages_by_filename)
+
+
+def _build_index_documents(
+    filenames: list[str],
+    document_store_paths: dict[str, str],
+    page_topic_store_paths: dict[str, str],
+) -> list[dict[str, object]]:
+    documents: list[dict[str, object]] = []
+    for filename in sorted(filenames):
+        document: dict[str, object] = {"filename": filename}
+        if filename in document_store_paths:
+            document["store_path"] = document_store_paths[filename]
+        if filename in page_topic_store_paths:
+            document["page_store_path"] = page_topic_store_paths[filename]
+        documents.append(document)
+    return documents
+
+
+def _build_index_stats(chunks: list[DocChunk]) -> dict[str, object]:
+    section_counts = Counter(chunk.section_type for chunk in chunks)
+    document_count = len(_build_document_corpus(chunks))
     return {
-        "version": 2,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "backend": backend,
-        "embedding_dim": _embedding_dim(),
-        "embedding_hash": EMBEDDING_HASH_ID,
-        "stats": {
-            "document_count": len(documents),
-            "chunk_count": len(chunks),
-            "section_type_counts": dict(section_counts),
-            "subject_hint_counts": dict(subject_hint_counts),
-        },
-        "documents": documents,
-        "chunks": [chunk.to_dict() for chunk in chunks],
-        "manifest_path": str(index_path),
+        "document_count": document_count,
+        "chunk_count": len(chunks),
+        "section_type_counts": dict(section_counts),
     }
 
 
-def upgrade_doc_metadata(index_path: Path) -> dict[str, object]:
+def upgrade_doc_metadata(
+    index_path: Path,
+    summary_generator: Callable[[str, str], str] | None = None,
+) -> dict[str, object]:
     if not index_path.exists():
         raise FileNotFoundError(f"Document index not found: {index_path}")
     payload = json.loads(index_path.read_text(encoding="utf-8"))
@@ -416,8 +510,8 @@ def upgrade_doc_metadata(index_path: Path) -> dict[str, object]:
                 chunk_index=chunk.chunk_index or index,
             )
         )
-    metadata_payload = _build_metadata_payload(enriched_chunks, str(payload.get("backend", "numpy")), index_path)
-    metadata_path = _metadata_file_path(index_path)
+    legacy_metadata_path = _legacy_metadata_file_path(index_path)
+    summary_path = _summary_file_path(index_path)
     store_dir = _store_dir_path(index_path)
     page_store_dir = _page_store_dir_path(index_path)
     store_dir.mkdir(parents=True, exist_ok=True)
@@ -427,6 +521,20 @@ def upgrade_doc_metadata(index_path: Path) -> dict[str, object]:
     for chunk in enriched_chunks:
         chunks_by_filename.setdefault(chunk.filename, []).append(chunk)
         pages_by_filename.setdefault(chunk.filename, {}).setdefault(chunk.page_number, []).append(chunk.content)
+    normalized_pages_by_filename = {
+        filename: [
+            (page_number, " ".join(page_chunks[page_number]))
+            for page_number in sorted(page_chunks, key=lambda value: value or 0)
+        ]
+        for filename, page_chunks in pages_by_filename.items()
+    }
+    corpus_summary = _generate_corpus_summary(
+        normalized_pages_by_filename,
+        summary_generator=summary_generator,
+    )
+    summary_path.write_text(corpus_summary, encoding="utf-8")
+    if legacy_metadata_path.exists():
+        legacy_metadata_path.unlink()
     document_store_paths: dict[str, str] = {}
     page_topic_store_paths: dict[str, str] = {}
     for filename, doc_chunks in chunks_by_filename.items():
@@ -435,33 +543,30 @@ def upgrade_doc_metadata(index_path: Path) -> dict[str, object]:
         document_store_paths[filename] = str(store_index_path)
     for filename, page_chunks in pages_by_filename.items():
         page_store_path = page_store_dir / f"{_store_slug(filename)}-pages.json"
-        doc_pages = [
-            (page_number, " ".join(page_chunks[page_number]))
-            for page_number in sorted(page_chunks, key=lambda value: value or 0)
-        ]
+        doc_pages = normalized_pages_by_filename[filename]
         _write_page_topic_store(page_store_path, filename, doc_pages)
         page_topic_store_paths[filename] = str(page_store_path)
-    for document in metadata_payload.get("documents", []):
-        if isinstance(document, dict):
-            filename = str(document.get("filename", ""))
-            if filename in document_store_paths:
-                document["store_path"] = document_store_paths[filename]
-            if filename in page_topic_store_paths:
-                document["page_store_path"] = page_topic_store_paths[filename]
-    metadata_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
+    index_documents = _build_index_documents(
+        list(chunks_by_filename.keys()),
+        document_store_paths,
+        page_topic_store_paths,
+    )
     payload["schema_version"] = 2
-    payload["metadata_path"] = str(metadata_path)
-    payload["documents"] = metadata_payload["documents"]
-    payload["stats"] = metadata_payload["stats"]
+    payload.pop("metadata_path", None)
+    payload["summary_path"] = str(summary_path)
+    payload["document_corpus"] = sorted(chunks_by_filename.keys())
+    payload["corpus_summary"] = corpus_summary
+    payload["documents"] = index_documents
+    payload["stats"] = _build_index_stats(enriched_chunks)
     payload["chunks"] = [chunk.to_dict() for chunk in enriched_chunks]
     payload["store_dir"] = str(store_dir)
     payload["page_store_dir"] = str(page_store_dir)
     index_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return {
         "index_path": str(index_path),
-        "metadata_path": str(metadata_path),
+        "summary_path": str(summary_path),
         "schema_version": 2,
-        "document_count": len(metadata_payload["documents"]) if isinstance(metadata_payload["documents"], list) else 0,
+        "document_count": len(index_documents),
         "chunk_count": len(enriched_chunks),
         "page_store_dir": str(page_store_dir),
     }
@@ -552,7 +657,11 @@ def _write_page_topic_store(
     page_store_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def build_doc_index(docs_dir: Path, index_path: Path) -> dict:
+def build_doc_index(
+    docs_dir: Path,
+    index_path: Path,
+    summary_generator: Callable[[str, str], str] | None = None,
+) -> dict:
     if not docs_dir.exists():
         raise FileNotFoundError(f"Documents directory not found: {docs_dir}")
 
@@ -592,8 +701,15 @@ def build_doc_index(docs_dir: Path, index_path: Path) -> dict:
         faiss.write_index(index, str(_index_file_path(index_path)))
     else:
         np.save(_vector_file_path(index_path), vectors)
-    metadata_path = _metadata_file_path(index_path)
-    metadata_payload = _build_metadata_payload(chunks, backend, index_path)
+    legacy_metadata_path = _legacy_metadata_file_path(index_path)
+    summary_path = _summary_file_path(index_path)
+    corpus_summary = _generate_corpus_summary(
+        pages_by_filename,
+        summary_generator=summary_generator,
+    )
+    summary_path.write_text(corpus_summary, encoding="utf-8")
+    if legacy_metadata_path.exists():
+        legacy_metadata_path.unlink()
     store_dir = _store_dir_path(index_path)
     store_dir.mkdir(parents=True, exist_ok=True)
     page_store_dir = _page_store_dir_path(index_path)
@@ -608,34 +724,33 @@ def build_doc_index(docs_dir: Path, index_path: Path) -> dict:
         page_store_path = page_store_dir / f"{_store_slug(filename)}-pages.json"
         _write_page_topic_store(page_store_path, filename, doc_pages)
         page_topic_store_paths[filename] = str(page_store_path)
-    for document in metadata_payload.get("documents", []):
-        if isinstance(document, dict):
-            filename = str(document.get("filename", ""))
-            if filename in document_store_paths:
-                document["store_path"] = document_store_paths[filename]
-            if filename in page_topic_store_paths:
-                document["page_store_path"] = page_topic_store_paths[filename]
-    metadata_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
+    index_documents = _build_index_documents(
+        list(chunks_by_filename.keys()),
+        document_store_paths,
+        page_topic_store_paths,
+    )
     payload = {
         "schema_version": 2,
         "backend": backend,
         "vector_dim": vector_dim,
         "embedding_hash": EMBEDDING_HASH_ID,
         "chunks": [chunk.to_dict() for chunk in chunks],
-        "documents": metadata_payload["documents"],
-        "stats": metadata_payload["stats"],
+        "documents": index_documents,
+        "document_corpus": sorted(chunks_by_filename.keys()),
+        "corpus_summary": corpus_summary,
+        "stats": _build_index_stats(chunks),
         "index_binary": str(_index_file_path(index_path)),
         "vector_fallback": str(_vector_file_path(index_path)),
-        "metadata_path": str(metadata_path),
+        "summary_path": str(summary_path),
         "store_dir": str(store_dir),
         "page_store_dir": str(page_store_dir),
     }
     index_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return {
         "chunk_count": len(chunks),
-        "document_count": len(metadata_payload["documents"]) if isinstance(metadata_payload["documents"], list) else 0,
+        "document_count": len(index_documents),
         "index_path": str(index_path),
-        "metadata_path": str(metadata_path),
+        "summary_path": str(summary_path),
         "backend": backend,
         "schema_version": 2,
         "page_store_dir": str(page_store_dir),
@@ -939,21 +1054,29 @@ def get_doc_index_metadata(index_path: Path, sample_chunks: int = 5) -> dict[str
     if not index_path.exists():
         raise FileNotFoundError(f"Document index not found: {index_path}")
     payload = json.loads(index_path.read_text(encoding="utf-8"))
-    metadata_path_raw = payload.get("metadata_path")
-    if isinstance(metadata_path_raw, str):
-        metadata_path = Path(metadata_path_raw)
-        if metadata_path.exists():
-            metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-            documents = metadata_payload.get("documents", [])
-            stats = metadata_payload.get("stats", {})
-            if isinstance(documents, list):
-                return {
-                    "document_count": int(stats.get("document_count", len(documents))) if isinstance(stats, dict) else len(documents),
-                    "documents": documents,
-                    "stats": stats,
-                    "schema_version": metadata_payload.get("version", 2),
-                    "metadata_path": str(metadata_path),
-                }
+    documents_raw = payload.get("documents", [])
+    compact_documents = [
+        {"filename": str(document.get("filename", "")).strip()}
+        for document in documents_raw
+        if isinstance(document, dict) and str(document.get("filename", "")).strip()
+    ] if isinstance(documents_raw, list) else []
+    document_corpus = [document["filename"] for document in compact_documents]
+    summary_text = str(payload.get("corpus_summary", "")).strip()
+    summary_path_raw = payload.get("summary_path")
+    if not summary_text and isinstance(summary_path_raw, str):
+        summary_path = Path(summary_path_raw)
+        if summary_path.exists():
+            summary_text = summary_path.read_text(encoding="utf-8").strip()
+    if document_corpus:
+        return {
+            "document_count": len(compact_documents),
+            "documents": compact_documents,
+            "document_corpus": document_corpus,
+            "corpus_summary": summary_text,
+            "stats": {"document_count": len(compact_documents)},
+            "schema_version": int(payload.get("schema_version", 2)),
+            "summary_path": str(summary_path_raw) if isinstance(summary_path_raw, str) else "",
+        }
     chunks = [DocChunk(**raw_chunk) for raw_chunk in payload.get("chunks", [])]
     by_file: dict[str, dict[str, object]] = {}
     for chunk in chunks:
@@ -997,26 +1120,28 @@ def get_doc_index_metadata(index_path: Path, sample_chunks: int = 5) -> dict[str
         for marker in re.findall(r"\b(?:19|20)\d{2}\b", chunk.content):
             temporal_markers.add(marker)
     documents = []
+    document_corpus: list[str] = []
     for entry in by_file.values():
-        pages = sorted(entry["pages"]) if isinstance(entry["pages"], set) else []
-        token_counter = Counter(entry["tokens"]) if isinstance(entry["tokens"], list) else Counter()
-        top_terms = [term for term, _ in token_counter.most_common(12)]
-        matched_keywords = sorted(entry["matched_keywords"]) if isinstance(entry["matched_keywords"], set) else []
-        filename_lower = str(entry["filename"]).lower()
-        likely_type = "report" if any(token in filename_lower for token in ["report", "statement", "presentation", "filing"]) else "document"
-        subject_hint = " ".join(_extract_subject_hints(str(entry["filename"])))
-        temporal_markers = sorted(entry["temporal_markers"]) if isinstance(entry["temporal_markers"], set) else []
-        documents.append(
-            {
-                "filename": entry["filename"],
-                "subject_hint": subject_hint,
-                "likely_type": likely_type,
-                "temporal_markers": temporal_markers,
-                "chunk_count": entry["chunk_count"],
-                "page_count_estimate": len(pages),
-                "keyword_coverage": matched_keywords,
-                "top_terms": top_terms,
-                "sample_chunks": entry["sample_chunks"],
-            }
+        filename = str(entry["filename"])
+        documents.append({"filename": filename})
+        document_corpus.append(filename)
+    documents = sorted(documents, key=lambda item: item["filename"])
+    document_corpus = sorted(document_corpus)
+    corpus_summary = _sanitize_summary_text(
+        "\n".join(
+            [
+                f"Corpus files: {', '.join(document_corpus)}." if document_corpus else "Corpus files are not available.",
+                "These are local annual or integrated financial reports for the indexed companies.",
+                "Use the PDF name to route company-specific document searches.",
+                "Open the matching file when the question asks for company commentary or report context.",
+            ]
         )
-    return {"document_count": len(documents), "documents": sorted(documents, key=lambda item: item["filename"])}
+    )
+    return {
+        "document_count": len(documents),
+        "documents": documents,
+        "document_corpus": document_corpus,
+        "corpus_summary": corpus_summary,
+        "stats": {"document_count": len(documents)},
+        "schema_version": int(payload.get("schema_version", 1)),
+    }
