@@ -154,11 +154,31 @@ def get_db_metadata(db_path: Path, sample_rows: int = 3) -> list[dict[str, objec
         for (table_name,) in tables:
             columns = connection.execute(f'PRAGMA table_info("{table_name}")').fetchall()
             row_count = connection.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0]
-            sample = connection.execute(f'SELECT * FROM "{table_name}" LIMIT {sample_rows}').fetchall()
+            
+            # Fetch a random sample
+            sample = connection.execute(f'SELECT * FROM "{table_name}" ORDER BY RANDOM() LIMIT {sample_rows}').fetchall()
+            
+            summary_stats = {}
+            for col_id, col_name, col_type, notnull, dflt, pk in columns:
+                if "url" in col_name.lower() or "link" in col_name.lower():
+                    continue  # Skip massive text blobs
+                
+                distinct_count = connection.execute(f'SELECT COUNT(DISTINCT "{col_name}") FROM "{table_name}"').fetchone()[0]
+                
+                # If there are a small number of unique values, it's a category (like company, status, department)
+                if 0 < distinct_count <= 20:
+                    vals = connection.execute(f'SELECT DISTINCT "{col_name}" FROM "{table_name}" WHERE "{col_name}" IS NOT NULL').fetchall()
+                    summary_stats[col_name] = {"distinct_values": [v[0] for v in vals]}
+                # Otherwise, if it's numeric or date-related, get logical bounds
+                elif col_type in ("INTEGER", "REAL") or "date" in col_name.lower() or "year" in col_name.lower():
+                    bounds = connection.execute(f'SELECT MIN("{col_name}"), MAX("{col_name}") FROM "{table_name}"').fetchone()
+                    summary_stats[col_name] = {"min": bounds[0], "max": bounds[1]}
+            
             metadata.append(
                 {
                     "table_name": table_name,
                     "row_count": row_count,
+                    "summary_stats": summary_stats,
                     "columns": [{"name": column[1], "type": column[2]} for column in columns],
                     "sample_rows": [list(row) for row in sample],
                 }

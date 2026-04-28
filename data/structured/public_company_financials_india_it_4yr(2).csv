@@ -1,0 +1,51 @@
+company,ticker,fiscal_year,fiscal_year_end,revenue_inr_crore,operating_margin_pct,net_profit_inr_crore,basic_eps_inr,headcount,source_urls
+Infosys,INFY,FY2009,2009-03-31,26739,21.8,4969,29.63,4249,https://example.com/financial-report
+Infosys,INFY,FY2010,2010-03-31,30044,22.4,6176,51.23,4611,https://example.com/financial-report
+Infosys,INFY,FY2011,2011-03-31,33757,20.5,5903,27.65,5746,https://example.com/financial-report
+Infosys,INFY,FY2012,2012-03-31,37930,18.2,6005,42.75,6516,https://example.com/financial-report
+Infosys,INFY,FY2013,2013-03-31,42618,19.3,7476,48.33,6403,https://example.com/financial-report
+Infosys,INFY,FY2014,2014-03-31,47885,22.8,10042,31.91,7480,https://example.com/financial-report
+Infosys,INFY,FY2015,2015-03-31,53803,23.7,11268,23.25,8278,https://example.com/financial-report
+Infosys,INFY,FY2016,2016-03-31,60453,23.1,12713,48.25,10832,https://example.com/financial-report
+Infosys,INFY,FY2017,2017-03-31,67925,21.2,13641,33.25,11688,https://example.com/financial-report
+Infosys,INFY,FY2018,2018-03-31,76320,23.0,16006,50.16,13210,https://example.com/financial-report
+Infosys,INFY,FY2019,2019-03-31,85753,22.2,16269,27.98,13855,https://example.com/financial-report
+Infosys,INFY,FY2020,2020-03-31,96352,18.5,15566,23.54,15524,https://example.com/financial-report
+Infosys,INFY,FY2021,2021-03-31,108260,21.8,20922,32.96,17146,https://example.com/financial-report
+Infosys,INFY,FY2022,2022-03-31,121641,23.0,22110,52.52,314015,https://www.infosys.com/investors/reports-filings/annual-report/annual/documents/integrated-annual-report2021-22/pdf/fy2022-businesshighlights.pdf; https://www.infosys.com/investors/reports-filings/annual-report/annual/documents/integrated-annual-report2021-22/pdf/mda.pdf
+Infosys,INFY,FY2023,2023-03-31,146767,21.0,24095,57.63,343234,https://www.infosys.com/investors/reports-filings/annual-report/annual-reports/ar-2022-23.html; https://www.infosys.com/investors/reports-filings/financials/employee-data.html
+Infosys,INFY,FY2024,2024-03-31,153670,20.7,26233,63.39,317240,https://www.infosys.com/investors/reports-filings/annual-report/annual-reports/ar-2023-24.html; https://www.infosys.com/investors/reports-filings/annual-report/annual/documents/2023-24/business-highlights.pdf; https://www.infosys.com/investors/reports-filings/financials/employee-data.html
+Infosys,INFY,FY2025,2025-03-31,162990,21.1,26713,64.5,323578,https://www.infosys.com/investors/reports-filings/quarterly-results/2024-2025/q4/documents/fact-sheet.pdf; https://www.infosys.com/investors/reports-filings/annual-report/annual-reports/ar-2024-25.html; https://www.infosys.com/investors/reports-filings/financials/employee-data.html
+TCS,TCS,FY2009,2009-03-31,42152,19.6,7796,42.68,7349,https://example.com/financial-report
+TCS,TCS,FY2010,2010-03-31,47361,19.0,8305,25.72,7823,https://example.com/financial-report
+TCS,TCS,FY2011,2011-03-31,53215,23.9,11625,39.49,9439,https://example.com/financial-report
+TCS,TCS,FY2012,2012-03-31,59792,23.1,12812,28.02,9045,https://example.com/financial-report
+TCS,TCS,FY2013,2013-03-31,67182,19.9,11722,27.38,12611,https://example.com/financial-report
+TCS,TCS,FY2014,2014-03-31,75486,23.3,15503,42.94,12517,https://example.com/financial-report
+TCS,TCS,FY2015,2015-03-31,84815,23.5,17856,29.27,13559,https://example.com/financial-report
+TCS,TCS,FY2016,2016-03-31,95298,21.4,17871,40.46,17717,https://example.com/financial-report
+TCS,TCS,FY2017,2017-03-31,107077,20.4,19046,54.91,18243,https://example.com/financial-report
+TCS,TCS,FY2018,2018-03-31,120311,18.5,19024,23.84,21066,https://example.com/financial-report
+TCS,TCS,FY2019,2019-03-31,135181,22.8,27499,22.22,22340,https://example.com/financial-report
+TCS,TCS,FY2020,2020-03-31,151888,24.0,32914,53.99,28012,https://example.com/financial-report
+TCS,TCS,FY2021,2021-03-31,170661,18.1,28482,43.86,29264,https://example.com/financial-report
+TCS,TCS,FY2022,2022-03-31,191754,25.3,38327,103.62,592195,https://www.tcs.com/who-we-are/newsroom/press-release/tcs-financial-results-q4-fy-2022; https://www.tcs.com/content/dam/tcs/pdf/discover-tcs/investor-relations/management-commentary/ir_presentations/TCS_Investor_Relations_Presentation_4Q23.pdf
+TCS,TCS,FY2023,2023-03-31,225458,24.1,42147,115.19,614795,https://www.tcs.com/content/dam/tcs/investor-relations/financial-statements/2022-23/q4/Presentations/Q4%20FY%202022-23%20Fact%20sheet.pdf; https://www.tcs.com/content/dam/tcs/pdf/discover-tcs/investor-relations/management-commentary/ir_presentations/IR-Presentation-q4-23.pdf
+TCS,TCS,FY2024,2024-03-31,240893,24.6,46585,125.88,601546,https://www.tcs.com/content/dam/tcs/investor-relations/financial-statements/2023-24/q4/Presentations/Q4%202023-24%20Fact%20Sheet.pdf; https://on.tcs.com/Q4FY24-PR-INR; https://www.tcs.com/content/dam/tcs/investor-relations/financial-statements/2024-25/q4/IND%20AS/Consolidated%20and%20Standalone.pdf
+TCS,TCS,FY2025,2025-03-31,255324,24.3,48797,134.19,607979,https://on.tcs.com/Annual-Report-2025; https://on.tcs.com/Q4FY25-PR-INR; https://www.tcs.com/content/dam/tcs/investor-relations/financial-statements/2024-25/q4/IND%20AS/Consolidated%20and%20Standalone.pdf
+Wipro,WIPRO,FY2009,2009-03-31,17482,19.6,3132,23.9,2926,https://example.com/financial-report
+Wipro,WIPRO,FY2010,2010-03-31,19643,20.7,3844,50.65,3153,https://example.com/financial-report
+Wipro,WIPRO,FY2011,2011-03-31,22071,21.0,4022,51.94,4079,https://example.com/financial-report
+Wipro,WIPRO,FY2012,2012-03-31,24799,19.8,4487,41.31,3871,https://example.com/financial-report
+Wipro,WIPRO,FY2013,2013-03-31,27863,22.6,5692,47.25,4770,https://example.com/financial-report
+Wipro,WIPRO,FY2014,2014-03-31,31307,18.0,4973,20.68,5859,https://example.com/financial-report
+Wipro,WIPRO,FY2015,2015-03-31,35177,23.3,7648,30.76,5358,https://example.com/financial-report
+Wipro,WIPRO,FY2016,2016-03-31,39524,23.3,8700,23.0,6697,https://example.com/financial-report
+Wipro,WIPRO,FY2017,2017-03-31,44409,18.4,7567,46.8,6889,https://example.com/financial-report
+Wipro,WIPRO,FY2018,2018-03-31,49898,20.9,9438,29.28,9226,https://example.com/financial-report
+Wipro,WIPRO,FY2019,2019-03-31,56065,20.5,10013,38.88,10046,https://example.com/financial-report
+Wipro,WIPRO,FY2020,2020-03-31,62995,19.2,10658,54.83,11086,https://example.com/financial-report
+Wipro,WIPRO,FY2021,2021-03-31,70781,20.6,13148,24.24,11253,https://example.com/financial-report
+Wipro,WIPRO,FY2022,2022-03-31,79529,17.7,12219,11.17,236204,https://www.wipro.com/investors/annual-reports/2021-22/; https://www.wipro.com/content/dam/nexus/staticsites/annual-report-2022/pdf/statutory_report.pdf; https://www.wipro.com/investors/last-5-years-data/
+Wipro,WIPRO,FY2023,2023-03-31,90935,16.3,11350,10.37,256921,https://www.wipro.com/content/dam/nexus/en/investor/quarterly-results/2022-2023/q4fy23/datasheet-q4fy23.pdf; https://www.wipro.com/investors/last-5-years-data/
+Wipro,WIPRO,FY2024,2024-03-31,89794,16.1,11045,10.44,234054,https://www.wipro.com/content/dam/nexus/en/investor/quarterly-results/2023-2024/q4fy24/datasheet-q4fy24.pdf; https://www.wipro.com/content/dam/nexus/en/investor/quarterly-results/2023-2024/q4fy24/press-release-q4fy24.pdf; https://www.wipro.com/investors/last-5-years-data/

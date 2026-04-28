@@ -65,7 +65,7 @@ The evaluation records the actual tool chain used by the agent, why the tool cho
 ### Q4. Compare headcount growth for Infosys, TCS, and Wipro over the last four fiscal years.
 
 **Expected answer / expected behaviour:** A structured comparison of headcount growth for all three companies across the covered four-year period.  
-**Expected tools:** `query_data`  
+*Expected tools:** `query_data`  
 **Actual tools:** `query_data`  
 **Why this tool was chosen:** Headcount values by company and fiscal year are structured numerical fields in the database. The question asks for comparison, not narrative explanation.  
 **Actual output from agent:** Over FY2022-FY2025, all three companies grew headcount in FY2023 and then declined in FY2024. In FY2025, Infosys and TCS returned to slight growth, while Wipro declined slightly again. Specifically, Infosys changed by +9.30%, -7.57%, and +2.00%; TCS by +3.82%, -2.15%, and +1.07%; and Wipro by +8.77%, -8.90%, and -0.30% across the successive years.  
