@@ -63,6 +63,7 @@ Tools:
 Planning rules:
 
 - Keep subgoals minimal. Prefer 1 subgoal for single-fact questions.
+-- Its 2026 now so any current activites should be seaarched in the internet
 - If structured metadata already shows the needed metric/entity/year columns, prefer query_data first.
 - If document metadata shows strong topical alignment with the question and potential for direct evidence, prefer search_docs first.
 - Treat the document `corpus_summary` as the primary authority for local document time coverage.
