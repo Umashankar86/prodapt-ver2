@@ -30,7 +30,7 @@ Supporting submission docs:
 This repo uses the public-company financials corpus from the assignment:
 
 - Unstructured: annual reports for Infosys, TCS, and Wipro
-- Structured: 4 years of financial metrics per company in CSV form
+- Structured: 15 years of financial metrics per company in CSV form
 - Web: live search for current market and company information
 
 ## Project Layout
